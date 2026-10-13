@@ -3,5 +3,4 @@ uvicorn[standard]>=0.48,<1
 python-multipart>=0.0.20,<1
 pydantic>=2.10,<3
 pillow>=11,<13
-pytesseract>=0.3.13,<1
 rapidfuzz>=3.10,<4
