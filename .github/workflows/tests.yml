@@ -73,6 +73,24 @@ jobs:
                   raise AssertionError(f"Browser dialog errors: {dialogs}")
               if overall not in {"PASS", "REVIEW NEEDED"}:
                   raise AssertionError(f"Unexpected demo result: {overall}")
+
+              # Verify unreadable-image UX in the same real browser.
+              from PIL import Image
+              Image.new("RGB", (600, 400), "white").save("/tmp/blank.png")
+              dialogs.clear()
+              page.locator("#label-image").set_input_files("/tmp/blank.png")
+              page.click("#verify-button")
+              page.wait_for_function(
+                  "() => document.querySelector('#client-status').textContent.includes('No readable text was detected')",
+                  timeout=30000,
+              )
+              if not dialogs:
+                  raise AssertionError("Unreadable image did not surface a clear user-facing message.")
+              if "No readable text was detected" not in dialogs[-1]:
+                  raise AssertionError(f"Unexpected unreadable-image message: {dialogs[-1]}")
+              if "[object Object]" in dialogs[-1]:
+                  raise AssertionError("Unreadable-image error regressed to [object Object].")
+              print("Unreadable-image UX:", dialogs[-1])
               browser.close()
           PY
 
