@@ -2,5 +2,7 @@ services:
   - type: web
     name: ttb-label-verifier
     runtime: docker
+    plan: free
+    region: virginia
     healthCheckPath: /health
-    autoDeploy: true
+    autoDeployTrigger: checksPass
