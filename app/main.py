@@ -636,13 +636,13 @@ async function verifyText(fields,ocr,warningBold=null){
   return data;
 }
 
-function render(j){
+function render(j,totalClientMs=null){
   const section=document.getElementById("result-section");
   const overall=document.getElementById("overall");
   overall.className="pill "+j.overall_status;
   overall.textContent=j.overall_status.replaceAll("_"," ").toUpperCase();
-  const total=(j.client_ocr_ms||0)+(j.processing_ms||0);
-  document.getElementById("timing").textContent="End-to-end processing: "+(total/1000).toFixed(2)+" s";
+  const total=totalClientMs!==null?totalClientMs:((j.client_ocr_ms||0)+(j.processing_ms||0));
+  document.getElementById("timing").textContent="Click-to-result time: "+(total/1000).toFixed(2)+" s";
   document.getElementById("ocr-confidence").textContent="OCR confidence: "+(j.ocr_confidence===null||j.ocr_confidence===undefined?"—":Math.round(j.ocr_confidence)+"%");
   document.getElementById("rows").innerHTML=j.results.map(x=>"<tr><td><b>"+esc(x.field)+"</b></td><td>"+esc(x.expected)+"</td><td>"+esc(x.observed??"Not detected")+"</td><td><span class='pill "+x.status+"'>"+esc(x.status.replaceAll("_"," "))+"</span></td><td>"+esc(x.reason)+"</td></tr>").join("");
   document.getElementById("raw").textContent=j.raw_text||"(none)";
@@ -656,13 +656,14 @@ document.getElementById("verify-form").onsubmit=async e=>{
   const status=document.getElementById("client-status");
   const file=document.getElementById("label-image").files[0];
   if(!file){alert("Choose a label image first.");return;}
+  const clickStarted=performance.now();
   button.disabled=true;status.textContent="Preparing local OCR…";setProgress(2);
   try{
     const ocr=await runOcr(file);
     if(!ocr.text.trim()) throw new Error("No readable text was detected in the label image. Try a clearer image.");
     status.textContent="Applying verification rules…";
     const data=await verifyText(applicationFields(e.target),ocr,null);
-    render(data);status.textContent="Verification complete.";
+    render(data,Math.round(performance.now()-clickStarted));status.textContent="Verification complete.";
   }catch(err){
     console.error(err);
     const message=errorMessage(err);
@@ -674,6 +675,7 @@ document.getElementById("verify-form").onsubmit=async e=>{
 document.getElementById("demo-button").onclick=async()=>{
   const button=document.getElementById("demo-button");
   const status=document.getElementById("client-status");
+  const clickStarted=performance.now();
   button.disabled=true;status.textContent="Loading built-in demo…";setProgress(2);
   try{
     const imageResponse=await fetch("/api/demo-image");
@@ -684,7 +686,7 @@ document.getElementById("demo-button").onclick=async()=>{
     status.textContent="Applying verification rules…";
     const fields=applicationFields(document.getElementById("verify-form"));
     const data=await verifyText(fields,ocr,true);
-    render(data);status.textContent="Demo complete.";
+    render(data,Math.round(performance.now()-clickStarted));status.textContent="Demo complete.";
   }catch(err){
     console.error(err);
     const message=errorMessage(err);
