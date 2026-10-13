@@ -1,18 +1,25 @@
 FROM node:20-bookworm-slim AS ocr-assets
 
 WORKDIR /ocr-build
+
+# Tesseract.js 7 declares the compatible tesseract.js-core version itself.
+# Do not pin an older core independently: browser workers and core must match.
 RUN npm init -y >/dev/null 2>&1 \
-    && npm install --omit=dev tesseract.js@7.0.0 tesseract.js-core@6.1.2 @tesseract.js-data/eng@1.0.0 \
+    && npm install --omit=dev tesseract.js@7.0.0 @tesseract.js-data/eng@1.0.0 \
     && mkdir -p /bundle/core /bundle/lang \
     && cp node_modules/tesseract.js/dist/tesseract.min.js /bundle/tesseract.min.js \
     && cp node_modules/tesseract.js/dist/worker.min.js /bundle/worker.min.js \
-    && find node_modules/tesseract.js-core -maxdepth 1 -type f \( -name 'tesseract-core*.js' -o -name 'tesseract-core*.wasm' \) -exec cp {} /bundle/core/ \; \
+    && cp node_modules/tesseract.js-core/tesseract-core* /bundle/core/ \
     && LANGFILE="$(find node_modules/@tesseract.js-data/eng -type f -name 'eng.traineddata.gz' | head -n 1)" \
     && test -n "$LANGFILE" \
     && cp "$LANGFILE" /bundle/lang/eng.traineddata.gz \
     && test -f /bundle/tesseract.min.js \
     && test -f /bundle/worker.min.js \
-    && test -f /bundle/lang/eng.traineddata.gz
+    && test -f /bundle/lang/eng.traineddata.gz \
+    && test -f /bundle/core/tesseract-core.wasm.js \
+    && test -f /bundle/core/tesseract-core-simd.wasm.js \
+    && test -f /bundle/core/tesseract-core-lstm.wasm.js \
+    && test -f /bundle/core/tesseract-core-simd-lstm.wasm.js
 
 FROM python:3.12-slim
 
