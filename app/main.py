@@ -74,8 +74,8 @@ def load_image(data: bytes) -> Image.Image:
         raise HTTPException(400, "Uploaded file is not a readable image.") from exc
     if image.width * image.height > 16_000_000:
         raise HTTPException(400, "Image dimensions are too large.")
-    if max(image.size) > 1600:
-        image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+    if max(image.size) > 1200:
+        image.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
     return image
 
 
@@ -88,8 +88,8 @@ def extract_ocr(image: Image.Image) -> tuple[str, float | None, dict]:
     data = pytesseract.image_to_data(
         prepared,
         output_type=Output.DICT,
-        config="--oem 1 --psm 3",
-        timeout=8,
+        config="--oem 1 --psm 11",
+        timeout=15,
     )
 
     confidences: list[float] = []
@@ -446,7 +446,7 @@ def verify_label(image_bytes: bytes, application: ApplicationData) -> dict:
 
 
 def sample_label_image() -> bytes:
-    width, height = 1000, 1300
+    width, height = 720, 940
     image = Image.new("RGB", (width, height), "#efe8d8")
     draw = ImageDraw.Draw(image)
 
@@ -469,31 +469,31 @@ def sample_label_image() -> bytes:
         )
 
     draw.rounded_rectangle(
-        (35, 35, width - 35, height - 35),
-        24,
+        (25, 25, width - 25, height - 25),
+        18,
         outline="#3b3024",
         width=5,
     )
-    centered("OLD TOM DISTILLERY", 100, 58, True)
-    centered("KENTUCKY STRAIGHT", 205, 38, True)
-    centered("BOURBON WHISKEY", 255, 48, True)
-    centered("45% Alc./Vol. (90 Proof)", 365, 32)
-    centered("750 mL", 415, 30)
-    centered("Bottled by Old Tom Distillery", 505, 23)
-    centered("Frankfort, KY", 540, 23)
+    centered("OLD TOM DISTILLERY", 72, 42, True)
+    centered("KENTUCKY STRAIGHT", 148, 28, True)
+    centered("BOURBON WHISKEY", 185, 35, True)
+    centered("45% Alc./Vol. (90 Proof)", 265, 24)
+    centered("750 mL", 302, 23)
+    centered("Bottled by Old Tom Distillery", 367, 18)
+    centered("Frankfort, KY", 394, 18)
 
-    x, y = 75, 710
-    heading_font = font(20, True)
-    body_font = font(20)
+    x, y = 54, 515
+    heading_font = font(15, True)
+    body_font = font(15)
     draw.text((x, y), "GOVERNMENT WARNING:", fill="#111111", font=heading_font)
     cursor_x = x + draw.textlength("GOVERNMENT WARNING: ", font=heading_font)
     body = CANONICAL_WARNING.split(":", 1)[1].strip()
     for word in body.split():
         token = word + " "
         token_width = draw.textlength(token, font=body_font)
-        if cursor_x + token_width > width - 75:
-            y += 31
-            cursor_x = 75
+        if cursor_x + token_width > width - 54:
+            y += 23
+            cursor_x = 54
         draw.text((cursor_x, y), token, fill="#111111", font=body_font)
         cursor_x += token_width
 
