@@ -124,3 +124,17 @@ def test_demo_image_is_available():
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("image/png")
     assert len(response.content) > 1000
+
+
+def test_stones_throw_typography_is_not_a_mismatch():
+    text = SAMPLE_OCR.replace("OLD TOM DISTILLERY", "STONE'S THROW", 1)
+    changed = application().model_copy(update={"brand_name": "Stone's Throw"})
+    payload = verify_ocr_text(
+        text,
+        changed,
+        ocr_confidence=95.0,
+        warning_bold=None,
+    )
+    brand = next(row for row in payload["results"] if row["field"] == "Brand name")
+    assert brand["status"] == "pass"
+    assert payload["overall_status"] == "review_needed"
