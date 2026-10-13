@@ -1,21 +1,22 @@
 from __future__ import annotations
 
-import csv
-import io
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
+from pathlib import Path
 
-import pytesseract
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps, UnidentifiedImageError
+from fastapi import FastAPI, Form, HTTPException
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field
-from pytesseract import Output
 from rapidfuzz import fuzz
 
-app = FastAPI(title="LabelCheck AI", version="1.0.0")
+app = FastAPI(title="LabelCheck AI", version="2.0.0")
+
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+STATIC_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 CANONICAL_WARNING = (
     "GOVERNMENT WARNING: (1) According to the Surgeon General, women should not drink "
@@ -54,69 +55,15 @@ def parse_volume_ml(value: str | None) -> float | None:
     if not value:
         return None
     match = re.search(
-        r"(\d+(?:\.\d+)?)\s*(ml|mL|ML|l|L|liters?|litres?)\b", value, re.I
+        r"(\d+(?:\.\d+)?)\s*(ml|mL|ML|l|L|liters?|litres?)\b",
+        value,
+        re.I,
     )
     if not match:
         return None
     amount = float(match.group(1))
     unit = match.group(2).casefold()
     return amount * 1000 if unit in {"l", "liter", "liters", "litre", "litres"} else amount
-
-
-def load_image(data: bytes) -> Image.Image:
-    if len(data) > 8 * 1024 * 1024:
-        raise HTTPException(400, "Image exceeds the 8 MB prototype limit.")
-    try:
-        image = Image.open(BytesIO(data))
-        image.verify()
-        image = Image.open(BytesIO(data)).convert("RGB")
-    except (UnidentifiedImageError, OSError) as exc:
-        raise HTTPException(400, "Uploaded file is not a readable image.") from exc
-    if image.width * image.height > 16_000_000:
-        raise HTTPException(400, "Image dimensions are too large.")
-    if max(image.size) > 1200:
-        image.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
-    return image
-
-
-def extract_ocr(image: Image.Image) -> tuple[str, float | None, dict]:
-    prepared = ImageOps.autocontrast(ImageOps.grayscale(image))
-    prepared = ImageEnhance.Contrast(prepared).enhance(1.25)
-    prepared = prepared.filter(ImageFilter.SHARPEN)
-
-    # One OCR subprocess keeps memory/CPU usage predictable on small prototype hosts.
-    data = pytesseract.image_to_data(
-        prepared,
-        output_type=Output.DICT,
-        config="--oem 1 --psm 11",
-        timeout=15,
-    )
-
-    confidences: list[float] = []
-    grouped_lines: dict[tuple[int, int, int, int], list[str]] = {}
-    count = len(data.get("text", []))
-    for index in range(count):
-        word = str(data["text"][index]).strip()
-        if word:
-            key = (
-                int(data["page_num"][index]),
-                int(data["block_num"][index]),
-                int(data["par_num"][index]),
-                int(data["line_num"][index]),
-            )
-            grouped_lines.setdefault(key, []).append(word)
-        try:
-            score = float(data["conf"][index])
-        except (TypeError, ValueError):
-            continue
-        if score >= 0:
-            confidences.append(score)
-
-    raw = "\n".join(
-        " ".join(words) for _, words in sorted(grouped_lines.items())
-    )
-    mean = round(sum(confidences) / len(confidences), 1) if confidences else None
-    return raw, mean, data
 
 
 def clean_lines(raw: str) -> list[str]:
@@ -129,14 +76,20 @@ def clean_lines(raw: str) -> list[str]:
 
 def best_segment(lines: list[str], expected: str, max_lines: int = 2) -> str | None:
     target = fold_text(expected)
+    if not target or not lines:
+        return None
+
     best_score = 0.0
     best_value = None
     for start in range(len(lines)):
         for width in range(1, min(max_lines, len(lines) - start) + 1):
             segment = " ".join(lines[start : start + width])
             candidate = fold_text(segment)
+            if not candidate:
+                continue
             score = max(
-                fuzz.ratio(target, candidate), fuzz.partial_ratio(target, candidate)
+                fuzz.ratio(target, candidate),
+                fuzz.partial_ratio(target, candidate),
             )
             score += fuzz.ratio(target, candidate) / 1000
             if score > best_score:
@@ -149,61 +102,11 @@ def extract_warning(raw: str) -> str | None:
     match = re.search(r"GOVERNMENT\s+WARNING", raw, re.I)
     if not match:
         return None
-    tail = raw[match.start() : match.start() + 650]
+    tail = raw[match.start() : match.start() + 700]
     end = re.search(r"health\s+problems\s*[.]", tail, re.I)
     if end:
         tail = tail[: end.end()]
     return re.sub(r"\s+", " ", tail).strip()
-
-
-def estimate_warning_boldness(image: Image.Image, data: dict) -> bool | None:
-    texts = [str(value).strip() for value in data.get("text", [])]
-    heading_indices: list[int] = []
-    start = None
-    for index, text in enumerate(texts):
-        folded = fold_text(text)
-        if folded == "government":
-            start = index
-            heading_indices = [index]
-        elif (
-            start is not None
-            and index - start <= 3
-            and folded.startswith("warning")
-        ):
-            heading_indices.append(index)
-            break
-    if len(heading_indices) < 2:
-        return None
-
-    body_indices = [
-        i
-        for i in range(
-            heading_indices[-1] + 1, min(len(texts), heading_indices[-1] + 18)
-        )
-        if len(fold_text(texts[i])) >= 3
-    ]
-    if len(body_indices) < 4:
-        return None
-
-    gray = image.convert("L")
-
-    def density(index: int) -> float:
-        x, y, width, height = [
-            int(data[key][index]) for key in ("left", "top", "width", "height")
-        ]
-        histogram = gray.crop((x, y, x + width, y + height)).histogram()
-        return sum(histogram[:160]) / max(1, width * height)
-
-    heading = [density(i) for i in heading_indices]
-    body = sorted(value for i in body_indices if (value := density(i)) > 0)
-    if not body:
-        return None
-    ratio = (sum(heading) / len(heading)) / body[len(body) // 2]
-    if ratio >= 1.45:
-        return True
-    if ratio <= 1.10:
-        return False
-    return None
 
 
 def field_result(field, expected, observed, status, reason):
@@ -216,19 +119,29 @@ def field_result(field, expected, observed, status, reason):
     }
 
 
-def verify_label(image_bytes: bytes, application: ApplicationData) -> dict:
+def verify_ocr_text(
+    raw: str,
+    application: ApplicationData,
+    ocr_confidence: float | None = None,
+    warning_bold: bool | None = None,
+) -> dict:
     started = time.perf_counter()
-    image = load_image(image_bytes)
-    raw, mean_confidence, ocr_data = extract_ocr(image)
-    lines = clean_lines(raw)
+    raw = (raw or "").strip()
+    if not raw:
+        raise HTTPException(
+            status_code=422,
+            detail="No readable text was detected in the label image.",
+        )
 
+    lines = clean_lines(raw)
     extracted = {
         "brand_name": best_segment(lines, application.brand_name, 1),
         "class_type": best_segment(lines, application.class_type, 2),
         "producer": best_segment(lines, application.producer_name_address, 3),
         "abv": next((line for line in lines if parse_abv(line) is not None), None),
         "volume": next(
-            (line for line in lines if parse_volume_ml(line) is not None), None
+            (line for line in lines if parse_volume_ml(line) is not None),
+            None,
         ),
         "country": next(
             (
@@ -240,8 +153,7 @@ def verify_label(image_bytes: bytes, application: ApplicationData) -> dict:
             None,
         ),
         "warning": extract_warning(raw),
-        "warning_caps": bool(re.search(r"GOVERNMENT\s+WARNING", raw)),
-        "warning_bold": estimate_warning_boldness(image, ocr_data),
+        "warning_caps": bool(re.search(r"\bGOVERNMENT\s+WARNING\b", raw)),
     }
 
     results = []
@@ -263,11 +175,13 @@ def verify_label(image_bytes: bytes, application: ApplicationData) -> dict:
                     expected,
                     None,
                     "review_needed",
-                    "No reliable text was extracted; human review is needed.",
+                    "No reliable matching text was extracted; human review is needed.",
                 )
             )
             continue
-        expected_folded, observed_folded = fold_text(expected), fold_text(observed)
+
+        expected_folded = fold_text(expected)
+        observed_folded = fold_text(observed)
         if (
             expected_folded == observed_folded
             or expected_folded in observed_folded
@@ -283,6 +197,7 @@ def verify_label(image_bytes: bytes, application: ApplicationData) -> dict:
                 )
             )
             continue
+
         score = max(
             fuzz.ratio(expected_folded, observed_folded),
             fuzz.partial_ratio(expected_folded, observed_folded),
@@ -365,7 +280,7 @@ def verify_label(image_bytes: bytes, application: ApplicationData) -> dict:
                 "Not applicable / domestic",
                 None,
                 "not_required",
-                "No country of origin supplied in the application data.",
+                "No country of origin was supplied in the application data.",
             )
         )
 
@@ -383,10 +298,17 @@ def verify_label(image_bytes: bytes, application: ApplicationData) -> dict:
     else:
         canonical = re.sub(r"\s+", " ", CANONICAL_WARNING).casefold()
         candidate = re.sub(r"\s+", " ", warning).casefold()
-        similarity = fuzz.partial_ratio(fold_text(CANONICAL_WARNING), fold_text(warning))
+        similarity = fuzz.partial_ratio(
+            fold_text(CANONICAL_WARNING),
+            fold_text(warning),
+        )
         exact = canonical in candidate
         warning_status = (
-            "pass" if exact else "review_needed" if similarity >= 92 else "mismatch"
+            "pass"
+            if exact
+            else "review_needed"
+            if similarity >= 92
+            else "mismatch"
         )
         results.append(
             field_result(
@@ -402,26 +324,38 @@ def verify_label(image_bytes: bytes, application: ApplicationData) -> dict:
             )
         )
 
-    bold = extracted["warning_bold"]
-    format_status = (
-        "pass"
-        if extracted["warning_caps"] and bold is True
-        else "mismatch"
-        if (not extracted["warning_caps"] or bold is False)
-        else "review_needed"
-    )
+    if not extracted["warning_caps"]:
+        format_status = "mismatch"
+        format_reason = "The required all-caps GOVERNMENT WARNING heading was not detected."
+    elif warning_bold is True:
+        format_status = "pass"
+        format_reason = "All-caps heading detected and bold formatting was positively verified."
+    elif warning_bold is False:
+        format_status = "mismatch"
+        format_reason = "All-caps heading detected, but bold formatting was not present."
+    else:
+        format_status = "review_needed"
+        format_reason = (
+            "All-caps heading detected. Bold typography requires visual confirmation."
+        )
+
     results.append(
         field_result(
             "Government warning format",
             "GOVERNMENT WARNING in all caps and bold; body not bold",
-            f"all_caps={extracted['warning_caps']}; bold={bold}",
+            (
+                f"all_caps={extracted['warning_caps']}; "
+                f"bold={warning_bold if warning_bold is not None else 'unverified'}"
+            ),
             format_status,
-            "Visual heading check; ambiguous typography is escalated to a human.",
+            format_reason,
         )
     )
 
     statuses = {
-        item["status"] for item in results if item["status"] != "not_required"
+        item["status"]
+        for item in results
+        if item["status"] != "not_required"
     }
     overall = (
         "mismatch"
@@ -431,23 +365,27 @@ def verify_label(image_bytes: bytes, application: ApplicationData) -> dict:
         else "pass"
     )
 
+    if ocr_confidence is not None and ocr_confidence < 55 and overall == "pass":
+        overall = "review_needed"
+
     return {
         "overall_status": overall,
         "processing_ms": int((time.perf_counter() - started) * 1000),
-        "extractor": "local-tesseract-lstm",
+        "ocr_confidence": ocr_confidence,
+        "extractor": "browser-tesseract-js-wasm",
         "results": results,
         "raw_text": raw,
-        "mean_ocr_confidence": mean_confidence,
         "notes": [
-            "Decision-support prototype only; it does not issue or replace a TTB regulatory determination.",
-            "Images are processed in memory and are not intentionally persisted.",
+            "OCR runs in the reviewer browser using locally served WebAssembly assets.",
+            "The backend applies deterministic verification rules and does not issue a TTB regulatory determination.",
+            "Uploaded label images are not sent to the server by the single-label workflow.",
         ],
     }
 
 
 def sample_label_image() -> bytes:
-    width, height = 720, 940
-    image = Image.new("RGB", (width, height), "#efe8d8")
+    width, height = 900, 1180
+    image = Image.new("RGB", (width, height), "#f1eadc")
     draw = ImageDraw.Draw(image)
 
     def font(size: int, bold: bool = False):
@@ -469,31 +407,31 @@ def sample_label_image() -> bytes:
         )
 
     draw.rounded_rectangle(
-        (25, 25, width - 25, height - 25),
-        18,
+        (30, 30, width - 30, height - 30),
+        20,
         outline="#3b3024",
-        width=5,
+        width=4,
     )
-    centered("OLD TOM DISTILLERY", 72, 42, True)
-    centered("KENTUCKY STRAIGHT", 148, 28, True)
-    centered("BOURBON WHISKEY", 185, 35, True)
-    centered("45% Alc./Vol. (90 Proof)", 265, 24)
-    centered("750 mL", 302, 23)
-    centered("Bottled by Old Tom Distillery", 367, 18)
-    centered("Frankfort, KY", 394, 18)
+    centered("OLD TOM DISTILLERY", 85, 50, True)
+    centered("KENTUCKY STRAIGHT", 175, 32, True)
+    centered("BOURBON WHISKEY", 220, 40, True)
+    centered("45% Alc./Vol. (90 Proof)", 320, 28)
+    centered("750 mL", 365, 27)
+    centered("Bottled by Old Tom Distillery", 455, 21)
+    centered("Frankfort, KY", 488, 21)
 
-    x, y = 54, 515
-    heading_font = font(15, True)
-    body_font = font(15)
+    x, y = 65, 650
+    heading_font = font(18, True)
+    body_font = font(18)
     draw.text((x, y), "GOVERNMENT WARNING:", fill="#111111", font=heading_font)
     cursor_x = x + draw.textlength("GOVERNMENT WARNING: ", font=heading_font)
     body = CANONICAL_WARNING.split(":", 1)[1].strip()
     for word in body.split():
         token = word + " "
         token_width = draw.textlength(token, font=body_font)
-        if cursor_x + token_width > width - 54:
-            y += 23
-            cursor_x = 54
+        if cursor_x + token_width > width - 65:
+            y += 28
+            cursor_x = 65
         draw.text((cursor_x, y), token, fill="#111111", font=body_font)
         cursor_x += token_width
 
@@ -502,12 +440,13 @@ def sample_label_image() -> bytes:
     return output.getvalue()
 
 
-HTML = """<!doctype html>
+HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>LabelCheck AI</title>
+<script src="/static/ocr/tesseract.min.js"></script>
 <style>
 :root{--navy:#0d2343;--blue:#13315c;--ink:#18202b;--muted:#667085;--line:#dfe3e8}
 *{box-sizing:border-box}body{margin:0;background:#f5f7fa;color:var(--ink);font-family:Inter,system-ui,Segoe UI,sans-serif;line-height:1.5}
@@ -517,18 +456,27 @@ header{background:var(--navy);color:#fff;padding:20px}.shell{max-width:1100px;ma
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.wide{grid-column:1/-1}label{font-size:13px;font-weight:700}
 input{width:100%;margin-top:6px;padding:11px;border:1px solid #cfd5dd;border-radius:9px;font:inherit}
 button{padding:11px 16px;border-radius:9px;border:1px solid #bfc7d2;font-weight:750;background:#fff;cursor:pointer}
-.primary{background:var(--blue);color:#fff;border-color:var(--blue)}.drop{display:block;border:1.5px dashed #aeb7c4;padding:28px;border-radius:12px;margin:18px 0;text-align:center}
+button:disabled{opacity:.6;cursor:wait}.primary{background:var(--blue);color:#fff;border-color:var(--blue)}
+.drop{display:block;border:1.5px dashed #aeb7c4;padding:28px;border-radius:12px;margin:18px 0;text-align:center}
 .notice{background:#edf5ff;border-left:4px solid var(--blue);padding:12px 14px;border-radius:10px}.hidden{display:none}
 .pill{display:inline-block;padding:6px 10px;border-radius:999px;font-weight:800;font-size:12px}.pass{background:#ecfdf3;color:#166534}.mismatch{background:#fff1f0;color:#b42318}.review_needed{background:#fff8db;color:#9a6700}.not_required{background:#f2f4f7;color:#475467}
-table{width:100%;border-collapse:collapse;min-width:850px}th,td{padding:11px;text-align:left;border-bottom:1px solid #e4e7ec;vertical-align:top;font-size:13px}th{background:#f8fafc}.wrap{overflow:auto}pre{white-space:pre-wrap;background:#f8fafc;padding:12px;border-radius:10px}
+.progress{height:8px;background:#eaecf0;border-radius:999px;overflow:hidden;margin:12px 0}.progress>div{height:100%;background:var(--blue);width:0;transition:width .2s}
+.quality{display:flex;gap:14px;flex-wrap:wrap;margin:10px 0 18px}.quality span{background:#f8fafc;border:1px solid var(--line);padding:7px 10px;border-radius:8px;font-size:13px}
+table{width:100%;border-collapse:collapse;min-width:850px}th,td{padding:11px;text-align:left;border-bottom:1px solid #e4e7ec;vertical-align:top;font-size:13px}th{background:#f8fafc}
+.wrap{overflow:auto}pre{white-space:pre-wrap;background:#f8fafc;padding:12px;border-radius:10px}
 @media(max-width:700px){.grid{grid-template-columns:1fr}.wide{grid-column:auto}}
 </style>
 </head>
 <body>
 <header><div class="shell"><strong>LabelCheck AI</strong> · human-in-the-loop decision support</div></header>
 <main class="shell">
-<section class="hero"><p class="muted">AI-POWERED ALCOHOL LABEL VERIFICATION</p><h1>Check routine label fields in seconds. Escalate uncertainty to a person.</h1><p class="muted">Local machine-learning OCR + deterministic verification rules + evidence-first review.</p></section>
-<div class="notice"><b>Prototype:</b> assists compliance review; does not issue a TTB approval.</div>
+<section class="hero">
+<p class="muted">AI-POWERED ALCOHOL LABEL VERIFICATION</p>
+<h1>Check routine label fields in seconds.<br>Escalate uncertainty to a person.</h1>
+<p class="muted">Private in-browser OCR + deterministic verification rules + evidence-first review.</p>
+</section>
+<div class="notice"><b>Prototype:</b> assists compliance review; does not issue a TTB approval. Label images are OCR-processed in the browser and are not uploaded by the single-label workflow.</div>
+
 <section class="card">
 <form id="verify-form">
 <div class="grid">
@@ -539,81 +487,247 @@ table{width:100%;border-collapse:collapse;min-width:850px}th,td{padding:11px;tex
 <label class="wide">Producer / bottler<input name="producer_name_address" value="Bottled by Old Tom Distillery, Frankfort, KY" required></label>
 <label class="wide">Country of origin (optional)<input name="country_of_origin"></label>
 </div>
-<label class="drop">Label image<input style="display:block;margin:10px auto 0;max-width:420px" type="file" name="image" accept="image/jpeg,image/png,image/webp" required></label>
+<label class="drop">Label image<input id="label-image" style="display:block;margin:10px auto 0;max-width:420px" type="file" accept="image/jpeg,image/png,image/webp" required></label>
+<div id="progress-wrap" class="progress hidden"><div id="progress-bar"></div></div>
 <button class="primary" id="verify-button">Verify label</button>
 <button type="button" id="demo-button">Run built-in demo</button>
 <span id="client-status" class="muted" role="status" aria-live="polite" style="margin-left:10px"></span>
 </form>
 </section>
+
 <section id="result-section" class="card hidden">
 <h2>Verification result</h2>
 <p><span id="overall" class="pill"></span> <span id="timing" class="muted"></span></p>
-<div class="wrap"><table><thead><tr><th>Field</th><th>Application</th><th>Observed label</th><th>Result</th><th>Why</th></tr></thead><tbody id="rows"></tbody></table></div>
+<div class="quality">
+<span id="ocr-confidence">OCR confidence: —</span>
+<span>OCR location: reviewer browser</span>
+<span>Decision logic: deterministic server rules</span>
+</div>
+<div class="wrap">
+<table>
+<thead><tr><th>Field</th><th>Application</th><th>Observed label</th><th>Result</th><th>Why</th></tr></thead>
+<tbody id="rows"></tbody>
+</table>
+</div>
 <details><summary>Technical evidence</summary><pre id="raw"></pre></details>
 </section>
+
 <section class="card">
-<details><summary><b>Batch review (stretch feature)</b></summary>
-<p class="muted">Upload a CSV manifest and matching images. Prototype limit: 20.</p>
+<details>
+<summary><b>Batch review (stretch feature)</b></summary>
+<p class="muted">Upload a CSV manifest and matching images. OCR runs sequentially in this browser so the server is not burdened by image processing. Prototype limit: 20 labels.</p>
 <form id="batch-form">
-<label>CSV manifest<input type="file" name="manifest" accept=".csv" required></label>
-<label>Images<input type="file" name="images" multiple accept="image/*" required></label>
-<button>Run batch</button>
+<label>CSV manifest<input id="batch-manifest" type="file" accept=".csv" required></label>
+<label>Images<input id="batch-images" type="file" multiple accept="image/jpeg,image/png,image/webp" required></label>
+<button id="batch-button">Run batch</button>
+<span id="batch-status" class="muted" role="status" aria-live="polite"></span>
 </form>
 <pre id="batch-output"></pre>
 </details>
 </section>
 </main>
+
 <script>
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let ocrWorkerPromise=null;
+
+function setProgress(value){
+  const wrap=document.getElementById("progress-wrap");
+  const bar=document.getElementById("progress-bar");
+  wrap.classList.remove("hidden");
+  bar.style.width=Math.max(0,Math.min(100,value))+"%";
+}
+function hideProgress(){
+  document.getElementById("progress-wrap").classList.add("hidden");
+  document.getElementById("progress-bar").style.width="0";
+}
+async function getOcrWorker(){
+  if(!window.Tesseract) throw new Error("Local OCR assets did not load.");
+  if(!ocrWorkerPromise){
+    ocrWorkerPromise=Tesseract.createWorker("eng",1,{
+      workerPath:"/static/ocr/worker.min.js",
+      corePath:"/static/ocr/core",
+      langPath:"/static/ocr/lang",
+      logger:m=>{
+        if(typeof m.progress==="number") setProgress(Math.round(m.progress*100));
+        const status=document.getElementById("client-status");
+        if(status && m.status) status.textContent="OCR: "+m.status.replaceAll("_"," ")+"…";
+      }
+    }).then(async worker=>{
+      await worker.setParameters({tessedit_pageseg_mode:Tesseract.PSM.SPARSE_TEXT});
+      return worker;
+    });
+  }
+  return ocrWorkerPromise;
+}
+
+async function downscaleImage(blob,maxSide=1400){
+  const bitmap=await createImageBitmap(blob);
+  const scale=Math.min(1,maxSide/Math.max(bitmap.width,bitmap.height));
+  if(scale===1){bitmap.close();return blob;}
+  const canvas=document.createElement("canvas");
+  canvas.width=Math.max(1,Math.round(bitmap.width*scale));
+  canvas.height=Math.max(1,Math.round(bitmap.height*scale));
+  const ctx=canvas.getContext("2d",{alpha:false});
+  ctx.fillStyle="#fff";ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.drawImage(bitmap,0,0,canvas.width,canvas.height);
+  bitmap.close();
+  return new Promise((resolve,reject)=>canvas.toBlob(
+    out=>out?resolve(out):reject(new Error("Could not prepare image for OCR.")),
+    "image/jpeg",
+    .92
+  ));
+}
+
+async function runOcr(blob){
+  const prepared=await downscaleImage(blob);
+  const worker=await getOcrWorker();
+  const started=performance.now();
+  const ret=await worker.recognize(prepared);
+  return {
+    text:(ret.data.text||"").trim(),
+    confidence:Number.isFinite(ret.data.confidence)?ret.data.confidence:null,
+    ocrMs:Math.round(performance.now()-started)
+  };
+}
+
+function applicationFields(form){
+  const source=form instanceof FormData?form:new FormData(form);
+  return {
+    brand_name:source.get("brand_name")||"",
+    class_type:source.get("class_type")||"",
+    alcohol_content:source.get("alcohol_content")||"",
+    net_contents:source.get("net_contents")||"",
+    producer_name_address:source.get("producer_name_address")||"",
+    country_of_origin:source.get("country_of_origin")||""
+  };
+}
+
+async function verifyText(fields,ocr,warningBold=null){
+  const body=new FormData();
+  Object.entries(fields).forEach(([key,value])=>body.append(key,value));
+  body.append("ocr_text",ocr.text);
+  if(ocr.confidence!==null) body.append("ocr_confidence",String(ocr.confidence));
+  if(warningBold!==null) body.append("warning_bold",String(warningBold));
+  const response=await fetch("/api/verify-text",{method:"POST",body});
+  const text=await response.text();
+  let data;
+  try{data=JSON.parse(text)}catch{data={detail:text||"Unexpected server response"}}
+  if(!response.ok) throw new Error(data.detail||"Verification failed");
+  data.client_ocr_ms=ocr.ocrMs;
+  return data;
+}
+
 function render(j){
   const section=document.getElementById("result-section");
   const overall=document.getElementById("overall");
   overall.className="pill "+j.overall_status;
-  overall.textContent=j.overall_status.replace("_"," ").toUpperCase();
-  document.getElementById("timing").textContent="Processed in "+(j.processing_ms/1000).toFixed(2)+" s · "+j.extractor;
-  document.getElementById("rows").innerHTML=j.results.map(x=>"<tr><td><b>"+esc(x.field)+"</b></td><td>"+esc(x.expected)+"</td><td>"+esc(x.observed??"Not detected")+"</td><td><span class='pill "+x.status+"'>"+esc(x.status.replace("_"," "))+"</span></td><td>"+esc(x.reason)+"</td></tr>").join("");
+  overall.textContent=j.overall_status.replaceAll("_"," ").toUpperCase();
+  const total=(j.client_ocr_ms||0)+(j.processing_ms||0);
+  document.getElementById("timing").textContent="End-to-end processing: "+(total/1000).toFixed(2)+" s";
+  document.getElementById("ocr-confidence").textContent="OCR confidence: "+(j.ocr_confidence===null||j.ocr_confidence===undefined?"—":Math.round(j.ocr_confidence)+"%");
+  document.getElementById("rows").innerHTML=j.results.map(x=>"<tr><td><b>"+esc(x.field)+"</b></td><td>"+esc(x.expected)+"</td><td>"+esc(x.observed??"Not detected")+"</td><td><span class='pill "+x.status+"'>"+esc(x.status.replaceAll("_"," "))+"</span></td><td>"+esc(x.reason)+"</td></tr>").join("");
   document.getElementById("raw").textContent=j.raw_text||"(none)";
   section.classList.remove("hidden");
-  section.scrollIntoView({behavior:"smooth"});
+  section.scrollIntoView({behavior:"smooth",block:"start"});
 }
-async function readJson(response){
-  const text=await response.text();
-  try{return JSON.parse(text)}catch{return {detail:text||"Unexpected server response"}}
-}
+
 document.getElementById("verify-form").onsubmit=async e=>{
   e.preventDefault();
   const button=document.getElementById("verify-button");
   const status=document.getElementById("client-status");
-  button.disabled=true; status.textContent="Verifying label…";
+  const file=document.getElementById("label-image").files[0];
+  if(!file){alert("Choose a label image first.");return;}
+  button.disabled=true;status.textContent="Preparing local OCR…";setProgress(2);
   try{
-    const response=await fetch("/api/verify",{method:"POST",body:new FormData(e.target)});
-    const data=await readJson(response);
-    if(!response.ok) throw new Error(data.detail||"Verification failed");
-    render(data); status.textContent="Verification complete.";
+    const ocr=await runOcr(file);
+    status.textContent="Applying verification rules…";
+    const data=await verifyText(applicationFields(e.target),ocr,null);
+    render(data);status.textContent="Verification complete.";
   }catch(err){
-    status.textContent="Verification failed.";
+    console.error(err);status.textContent="Verification failed.";
     alert(err.message||"Verification failed");
-  }finally{button.disabled=false}
+  }finally{button.disabled=false;hideProgress()}
 };
+
 document.getElementById("demo-button").onclick=async()=>{
   const button=document.getElementById("demo-button");
   const status=document.getElementById("client-status");
-  button.disabled=true; status.textContent="Running built-in demo…";
+  button.disabled=true;status.textContent="Loading built-in demo…";setProgress(2);
   try{
-    const response=await fetch("/api/demo",{method:"POST"});
-    const data=await readJson(response);
-    if(!response.ok) throw new Error(data.detail||"Built-in demo failed");
-    render(data); status.textContent="Demo complete.";
+    const imageResponse=await fetch("/api/demo-image");
+    if(!imageResponse.ok) throw new Error("Could not load built-in demo image.");
+    const blob=await imageResponse.blob();
+    const ocr=await runOcr(blob);
+    status.textContent="Applying verification rules…";
+    const fields=applicationFields(document.getElementById("verify-form"));
+    const data=await verifyText(fields,ocr,true);
+    render(data);status.textContent="Demo complete.";
   }catch(err){
-    status.textContent="Demo failed.";
+    console.error(err);status.textContent="Demo failed.";
     alert(err.message||"Built-in demo failed");
-  }finally{button.disabled=false}
+  }finally{button.disabled=false;hideProgress()}
 };
+
+function parseCsv(text){
+  const rows=[];let row=[],field="",quoted=false;
+  for(let i=0;i<text.length;i++){
+    const ch=text[i],next=text[i+1];
+    if(ch==='"' && quoted && next==='"'){field+='"';i++;continue}
+    if(ch==='"'){quoted=!quoted;continue}
+    if(ch==="," && !quoted){row.push(field);field="";continue}
+    if((ch==="\n"||ch==="\r")&&!quoted){
+      if(ch==="\r"&&next==="\n")i++;
+      row.push(field);field="";
+      if(row.some(v=>v.trim()!==""))rows.push(row);
+      row=[];continue
+    }
+    field+=ch;
+  }
+  row.push(field);if(row.some(v=>v.trim()!==""))rows.push(row);
+  if(rows.length<2)return[];
+  const headers=rows[0].map(x=>x.trim());
+  return rows.slice(1).map(values=>Object.fromEntries(headers.map((h,i)=>[h,(values[i]||"").trim()])));
+}
+
 document.getElementById("batch-form").onsubmit=async e=>{
   e.preventDefault();
-  const response=await fetch("/api/batch",{method:"POST",body:new FormData(e.target)});
-  const data=await response.json();
-  document.getElementById("batch-output").textContent=JSON.stringify(data,null,2);
+  const button=document.getElementById("batch-button");
+  const status=document.getElementById("batch-status");
+  const manifestFile=document.getElementById("batch-manifest").files[0];
+  const images=[...document.getElementById("batch-images").files];
+  if(!manifestFile||!images.length){alert("Choose a manifest and label images.");return}
+  if(images.length>20){alert("Prototype batch limit is 20 images.");return}
+  button.disabled=true;setProgress(2);
+  try{
+    const rows=parseCsv(await manifestFile.text());
+    const imageMap=new Map(images.map(file=>[file.name,file]));
+    const results=[];
+    let processed=0;
+    for(const row of rows){
+      const file=imageMap.get(row.filename);
+      if(!file)continue;
+      status.textContent="Batch OCR "+(processed+1)+"…";
+      const ocr=await runOcr(file);
+      const fields={
+        brand_name:row.brand_name||"",
+        class_type:row.class_type||"",
+        alcohol_content:row.alcohol_content||"",
+        net_contents:row.net_contents||"",
+        producer_name_address:row.producer_name_address||"",
+        country_of_origin:row.country_of_origin||""
+      };
+      const data=await verifyText(fields,ocr,null);
+      results.push({filename:row.filename,status:data.overall_status,ocr_confidence:data.ocr_confidence,processing_ms:(data.client_ocr_ms||0)+(data.processing_ms||0)});
+      processed++;
+    }
+    if(!results.length)throw new Error("No manifest filenames matched the selected images.");
+    const counts=results.reduce((acc,item)=>(acc[item.status]=(acc[item.status]||0)+1,acc),{});
+    document.getElementById("batch-output").textContent=JSON.stringify({total:results.length,summary:counts,items:results},null,2);
+    status.textContent="Batch complete.";
+  }catch(err){
+    console.error(err);status.textContent="Batch failed.";alert(err.message||"Batch failed");
+  }finally{button.disabled=false;hideProgress()}
 };
 </script>
 </body>
@@ -627,21 +741,34 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "extractor": "local-tesseract-lstm"}
+    return {
+        "status": "ok",
+        "ocr_location": "browser",
+        "verification": "server-deterministic-rules",
+    }
 
 
-@app.post("/api/verify")
-async def api_verify(
-    image: UploadFile = File(...),
+@app.get("/api/demo-image")
+def demo_image():
+    return StreamingResponse(
+        BytesIO(sample_label_image()),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+@app.post("/api/verify-text")
+def api_verify_text(
     brand_name: str = Form(...),
     class_type: str = Form(...),
     alcohol_content: str = Form(...),
     net_contents: str = Form(...),
     producer_name_address: str = Form(...),
     country_of_origin: str | None = Form(None),
+    ocr_text: str = Form(...),
+    ocr_confidence: float | None = Form(None),
+    warning_bold: bool | None = Form(None),
 ):
-    if image.content_type not in {"image/jpeg", "image/png", "image/webp"}:
-        raise HTTPException(415, "Use JPG, PNG, or WebP.")
     application = ApplicationData(
         brand_name=brand_name,
         class_type=class_type,
@@ -650,95 +777,9 @@ async def api_verify(
         producer_name_address=producer_name_address,
         country_of_origin=country_of_origin or None,
     )
-    return verify_label(await image.read(), application)
-
-
-@app.api_route("/api/demo", methods=["GET", "POST"])
-def api_demo():
-    try:
-        application = ApplicationData(
-            brand_name="OLD TOM DISTILLERY",
-            class_type="Kentucky Straight Bourbon Whiskey",
-            alcohol_content="45% Alc./Vol. (90 Proof)",
-            net_contents="750 mL",
-            producer_name_address="Bottled by Old Tom Distillery, Frankfort, KY",
-        )
-        return verify_label(sample_label_image(), application)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Built-in demo failed: {type(exc).__name__}: {exc}",
-        ) from exc
-
-
-@app.post("/api/batch")
-async def api_batch(
-    manifest: UploadFile = File(...), images: list[UploadFile] = File(...)
-):
-    if len(images) > 20:
-        raise HTTPException(400, "Prototype batch limit is 20 images.")
-    try:
-        manifest_rows = list(
-            csv.DictReader(io.StringIO((await manifest.read()).decode("utf-8-sig")))
-        )
-    except Exception as exc:
-        raise HTTPException(400, "Manifest must be a readable UTF-8 CSV.") from exc
-
-    image_map = {image.filename: await image.read() for image in images}
-    jobs = []
-    for row in manifest_rows:
-        filename = row.get("filename")
-        if filename not in image_map:
-            continue
-        try:
-            application = ApplicationData(
-                brand_name=row["brand_name"],
-                class_type=row["class_type"],
-                alcohol_content=row["alcohol_content"],
-                net_contents=row["net_contents"],
-                producer_name_address=row["producer_name_address"],
-                country_of_origin=row.get("country_of_origin") or None,
-            )
-        except Exception:
-            continue
-        jobs.append((filename, image_map[filename], application))
-
-    if not jobs:
-        raise HTTPException(
-            400, "No manifest rows matched the uploaded image filenames."
-        )
-
-    started = time.perf_counter()
-    items = []
-    with ThreadPoolExecutor(max_workers=min(4, len(jobs))) as pool:
-        futures = {
-            pool.submit(verify_label, payload, application): filename
-            for filename, payload, application in jobs
-        }
-        for future in as_completed(futures):
-            filename = futures[future]
-            try:
-                outcome = future.result()
-                items.append(
-                    {
-                        "filename": filename,
-                        "overall_status": outcome["overall_status"],
-                        "processing_ms": outcome["processing_ms"],
-                    }
-                )
-            except Exception:
-                items.append(
-                    {
-                        "filename": filename,
-                        "overall_status": "review_needed",
-                        "processing_ms": 0,
-                    }
-                )
-
-    return {
-        "total": len(items),
-        "total_processing_ms": int((time.perf_counter() - started) * 1000),
-        "items": sorted(items, key=lambda item: item["filename"].casefold()),
-    }
+    return verify_ocr_text(
+        raw=ocr_text,
+        application=application,
+        ocr_confidence=ocr_confidence,
+        warning_bold=warning_bold,
+    )
