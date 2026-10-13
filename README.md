@@ -57,8 +57,8 @@ The built-in demo is generated at runtime, so no external image asset or network
 
 ## Run with Docker
 
-    git clone <repository-url>
-    cd <repository-folder>
+    git clone https://github.com/songokui1/ttb-label-verifier.git
+    cd ttb-label-verifier
     docker build -t labelcheck-ai .
     docker run --rm -p 10000:10000 labelcheck-ai
 
@@ -146,3 +146,18 @@ The implementation is intentionally optimized for the criteria in the take-home:
 - UX and error handling: simple form, explicit results, validation, review state
 - Attention to requirements: measured latency and standalone deployment
 - Creative problem-solving: explainable human-review path and batch-processing stretch feature
+
+
+## Deployment
+
+The repository includes a Render Blueprint and Dockerfile. The service uses the local Tesseract OCR engine and does not require an API key.
+
+Render configuration:
+
+- Runtime: Docker
+- Health check: `/health`
+- Region: Virginia
+- Automatic deploy: only after linked CI checks pass
+- Default prototype plan: Free
+
+For an evaluation window where instant first-load response matters, a non-sleeping Render compute plan is preferable because Render Free services can spin down after periods of inactivity. This hosting cold start is separate from the application's measured label-processing time.
