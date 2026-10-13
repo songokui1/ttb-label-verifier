@@ -520,8 +520,9 @@ table{width:100%;border-collapse:collapse;min-width:850px}th,td{padding:11px;tex
 <label class="wide">Country of origin (optional)<input name="country_of_origin"></label>
 </div>
 <label class="drop">Label image<input style="display:block;margin:10px auto 0;max-width:420px" type="file" name="image" accept="image/jpeg,image/png,image/webp" required></label>
-<button class="primary">Verify label</button>
+<button class="primary" id="verify-button">Verify label</button>
 <button type="button" id="demo-button">Run built-in demo</button>
+<span id="client-status" class="muted" role="status" aria-live="polite" style="margin-left:10px"></span>
 </form>
 </section>
 <section id="result-section" class="card hidden">
@@ -555,16 +556,38 @@ function render(j){
   section.classList.remove("hidden");
   section.scrollIntoView({behavior:"smooth"});
 }
+async function readJson(response){
+  const text=await response.text();
+  try{return JSON.parse(text)}catch{return {detail:text||"Unexpected server response"}}
+}
 document.getElementById("verify-form").onsubmit=async e=>{
   e.preventDefault();
-  const response=await fetch("/api/verify",{method:"POST",body:new FormData(e.target)});
-  const data=await response.json();
-  if(!response.ok){alert(data.detail||"Verification failed");return;}
-  render(data);
+  const button=document.getElementById("verify-button");
+  const status=document.getElementById("client-status");
+  button.disabled=true; status.textContent="Verifying label…";
+  try{
+    const response=await fetch("/api/verify",{method:"POST",body:new FormData(e.target)});
+    const data=await readJson(response);
+    if(!response.ok) throw new Error(data.detail||"Verification failed");
+    render(data); status.textContent="Verification complete.";
+  }catch(err){
+    status.textContent="Verification failed.";
+    alert(err.message||"Verification failed");
+  }finally{button.disabled=false}
 };
 document.getElementById("demo-button").onclick=async()=>{
-  const response=await fetch("/api/demo",{method:"POST"});
-  render(await response.json());
+  const button=document.getElementById("demo-button");
+  const status=document.getElementById("client-status");
+  button.disabled=true; status.textContent="Running built-in demo…";
+  try{
+    const response=await fetch("/api/demo",{method:"POST"});
+    const data=await readJson(response);
+    if(!response.ok) throw new Error(data.detail||"Built-in demo failed");
+    render(data); status.textContent="Demo complete.";
+  }catch(err){
+    status.textContent="Demo failed.";
+    alert(err.message||"Built-in demo failed");
+  }finally{button.disabled=false}
 };
 document.getElementById("batch-form").onsubmit=async e=>{
   e.preventDefault();
@@ -610,16 +633,24 @@ async def api_verify(
     return verify_label(await image.read(), application)
 
 
-@app.post("/api/demo")
+@app.api_route("/api/demo", methods=["GET", "POST"])
 def api_demo():
-    application = ApplicationData(
-        brand_name="OLD TOM DISTILLERY",
-        class_type="Kentucky Straight Bourbon Whiskey",
-        alcohol_content="45% Alc./Vol. (90 Proof)",
-        net_contents="750 mL",
-        producer_name_address="Bottled by Old Tom Distillery, Frankfort, KY",
-    )
-    return verify_label(sample_label_image(), application)
+    try:
+        application = ApplicationData(
+            brand_name="OLD TOM DISTILLERY",
+            class_type="Kentucky Straight Bourbon Whiskey",
+            alcohol_content="45% Alc./Vol. (90 Proof)",
+            net_contents="750 mL",
+            producer_name_address="Bottled by Old Tom Distillery, Frankfort, KY",
+        )
+        return verify_label(sample_label_image(), application)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Built-in demo failed: {type(exc).__name__}: {exc}",
+        ) from exc
 
 
 @app.post("/api/batch")
