@@ -27,6 +27,35 @@ label image + application data
 
 This separates perception from decision logic. Machine learning is used where it is useful for reading label text, while numeric equivalence, text normalization, and government-warning checks are implemented as explicit, testable rules.
 
+
+## Tools used
+
+- Python 3.12 and FastAPI for the web application and API
+- Tesseract 5 LSTM OCR via pytesseract for local neural text extraction
+- Pillow for image validation and preprocessing
+- RapidFuzz for controlled text-similarity checks
+- Pydantic for typed application data
+- Pytest and GitHub Actions for automated verification
+- Docker for reproducible packaging
+- Render for the public prototype deployment
+
+## Requirements traceability
+
+| Take-home expectation | Implementation |
+| --- | --- |
+| Standalone proof-of-concept | Independent FastAPI application; no COLA integration |
+| Compare label artwork with application data | Upload form plus field-by-field verification results |
+| Common label fields | Brand, class/type, ABV, net contents, producer/bottler, country of origin, warning |
+| Exact warning review | Canonical wording check plus all-caps heading and conservative boldness assessment |
+| About five-second usability target | Server-side latency is displayed; built-in demo has a CI assertion below five seconds |
+| Simple UX | Single review form, one primary action, clear PASS / MISMATCH / REVIEW NEEDED states |
+| Human judgment for nuanced cases | Ambiguous text or visual evidence is escalated to REVIEW NEEDED |
+| Batch-upload opportunity | Optional bounded CSV + multi-image batch workflow |
+| Network restrictions | Core OCR runs locally with no external ML endpoint |
+| README setup/run documentation | Docker and local-development instructions included |
+| Approach, tools, assumptions | Documented here and in docs/architecture.md |
+| Working deployed URL | Render Blueprint and Docker configuration included; live URL supplied separately in submission |
+
 ## Core features
 
 - JPG, PNG, and WebP label upload
