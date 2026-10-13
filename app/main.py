@@ -72,29 +72,49 @@ def load_image(data: bytes) -> Image.Image:
         image = Image.open(BytesIO(data)).convert("RGB")
     except (UnidentifiedImageError, OSError) as exc:
         raise HTTPException(400, "Uploaded file is not a readable image.") from exc
-    if image.width * image.height > 25_000_000:
+    if image.width * image.height > 16_000_000:
         raise HTTPException(400, "Image dimensions are too large.")
-    if max(image.size) > 2200:
-        image.thumbnail((2200, 2200), Image.Resampling.LANCZOS)
+    if max(image.size) > 1600:
+        image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
     return image
 
 
 def extract_ocr(image: Image.Image) -> tuple[str, float | None, dict]:
     prepared = ImageOps.autocontrast(ImageOps.grayscale(image))
-    prepared = ImageEnhance.Contrast(prepared).enhance(1.35)
+    prepared = ImageEnhance.Contrast(prepared).enhance(1.25)
     prepared = prepared.filter(ImageFilter.SHARPEN)
+
+    # One OCR subprocess keeps memory/CPU usage predictable on small prototype hosts.
     data = pytesseract.image_to_data(
-        prepared, output_type=Output.DICT, config="--oem 1 --psm 3"
+        prepared,
+        output_type=Output.DICT,
+        config="--oem 1 --psm 3",
+        timeout=8,
     )
-    raw = pytesseract.image_to_string(prepared, config="--oem 1 --psm 3")
+
     confidences: list[float] = []
-    for value in data.get("conf", []):
+    grouped_lines: dict[tuple[int, int, int, int], list[str]] = {}
+    count = len(data.get("text", []))
+    for index in range(count):
+        word = str(data["text"][index]).strip()
+        if word:
+            key = (
+                int(data["page_num"][index]),
+                int(data["block_num"][index]),
+                int(data["par_num"][index]),
+                int(data["line_num"][index]),
+            )
+            grouped_lines.setdefault(key, []).append(word)
         try:
-            score = float(value)
+            score = float(data["conf"][index])
         except (TypeError, ValueError):
             continue
         if score >= 0:
             confidences.append(score)
+
+    raw = "\n".join(
+        " ".join(words) for _, words in sorted(grouped_lines.items())
+    )
     mean = round(sum(confidences) / len(confidences), 1) if confidences else None
     return raw, mean, data
 
@@ -426,7 +446,7 @@ def verify_label(image_bytes: bytes, application: ApplicationData) -> dict:
 
 
 def sample_label_image() -> bytes:
-    width, height = 1500, 1900
+    width, height = 1000, 1300
     image = Image.new("RGB", (width, height), "#efe8d8")
     draw = ImageDraw.Draw(image)
 
@@ -449,31 +469,31 @@ def sample_label_image() -> bytes:
         )
 
     draw.rounded_rectangle(
-        (55, 55, width - 55, height - 55),
-        32,
+        (35, 35, width - 35, height - 35),
+        24,
         outline="#3b3024",
         width=5,
     )
-    centered("OLD TOM DISTILLERY", 145, 88, True)
-    centered("KENTUCKY STRAIGHT", 295, 56, True)
-    centered("BOURBON WHISKEY", 365, 72, True)
-    centered("45% Alc./Vol. (90 Proof)", 520, 48)
-    centered("750 mL", 595, 44)
-    centered("Bottled by Old Tom Distillery", 735, 34)
-    centered("Frankfort, KY", 785, 34)
+    centered("OLD TOM DISTILLERY", 100, 58, True)
+    centered("KENTUCKY STRAIGHT", 205, 38, True)
+    centered("BOURBON WHISKEY", 255, 48, True)
+    centered("45% Alc./Vol. (90 Proof)", 365, 32)
+    centered("750 mL", 415, 30)
+    centered("Bottled by Old Tom Distillery", 505, 23)
+    centered("Frankfort, KY", 540, 23)
 
-    x, y = 120, 1050
-    heading_font = font(30, True)
-    body_font = font(30)
+    x, y = 75, 710
+    heading_font = font(20, True)
+    body_font = font(20)
     draw.text((x, y), "GOVERNMENT WARNING:", fill="#111111", font=heading_font)
     cursor_x = x + draw.textlength("GOVERNMENT WARNING: ", font=heading_font)
     body = CANONICAL_WARNING.split(":", 1)[1].strip()
     for word in body.split():
         token = word + " "
         token_width = draw.textlength(token, font=body_font)
-        if cursor_x + token_width > width - 120:
-            y += 47
-            cursor_x = 120
+        if cursor_x + token_width > width - 75:
+            y += 31
+            cursor_x = 75
         draw.text((cursor_x, y), token, fill="#111111", font=body_font)
         cursor_x += token_width
 
