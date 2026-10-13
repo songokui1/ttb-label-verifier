@@ -98,12 +98,20 @@ Then open http://localhost:10000.
 
 For backend-only development:
 
+macOS / Linux:
+
     python -m venv .venv
     source .venv/bin/activate
 
-On Windows:
+Windows PowerShell:
 
-    .venv\Scripts\activate
+    python -m venv .venv
+    .\.venv\Scripts\Activate.ps1
+
+Windows Command Prompt:
+
+    python -m venv .venv
+    .venv\Scripts\activate.bat
 
 Then:
 
@@ -111,7 +119,7 @@ Then:
     uvicorn app.main:app --reload
     python -m pytest
 
-The browser OCR assets are assembled by the Docker build from pinned npm packages. For full end-to-end local testing, Docker is the recommended path.
+These direct Python commands are intentionally for backend/API development and tests. The browser OCR assets are assembled during the Docker build, so use the **Run with Docker** path above to exercise the complete application locally, including OCR.
 
 ## Batch review
 
