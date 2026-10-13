@@ -46,7 +46,7 @@ The OCR engine and English language data are bundled into the deployed applicati
 - Conservative human-review escalation when bold typography cannot be established automatically
 - Field-level evidence and explanations
 - PASS / MISMATCH / REVIEW NEEDED outcomes
-- OCR confidence and end-to-end processing time displayed in the UI
+- OCR confidence and click-to-result latency displayed in the UI
 - Built-in synthetic demonstration label
 - Browser-side batch-review stretch feature using a CSV manifest and up to 20 images
 - Automated unit tests plus an exact Docker deployment smoke test in GitHub Actions
@@ -59,7 +59,7 @@ The OCR engine and English language data are bundled into the deployed applicati
 | Compare label artwork with application data | Label image + application form + field-by-field results |
 | Common label fields | Brand, class/type, ABV, net contents, producer/bottler, country of origin, warning |
 | Exact warning review | Canonical wording comparison and all-caps heading check |
-| About five-second usability target | End-to-end elapsed time is displayed; processing is moved off the constrained server and into the reviewer's browser |
+| About five-second usability target | Click-to-result latency is displayed; processing is moved off the constrained server and into the reviewer's browser |
 | Simple UX | One main review form, one primary action, and clear result states |
 | Human judgment for nuanced cases | Ambiguous text or typography is escalated to REVIEW NEEDED |
 | Batch-upload opportunity | Optional CSV + multi-image batch workflow |
