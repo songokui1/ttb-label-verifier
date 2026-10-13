@@ -12,9 +12,27 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install Tesseract
-        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr fonts-dejavu-core
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: pip install -r requirements-dev.txt
-      - name: Run tests
+      - name: Run unit tests
         run: python -m pytest
+      - name: Build deployment image
+        run: docker build -t labelcheck-ai:test .
+      - name: Smoke-test deployment image
+        run: |
+          docker run -d --name labelcheck-test -p 10000:10000 labelcheck-ai:test
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:10000/health >/tmp/health.json; then
+              break
+            fi
+            sleep 1
+          done
+          cat /tmp/health.json
+          curl -fsS http://127.0.0.1:10000/static/ocr/tesseract.min.js >/dev/null
+          curl -fsS http://127.0.0.1:10000/static/ocr/worker.min.js >/dev/null
+          curl -fsS http://127.0.0.1:10000/static/ocr/lang/eng.traineddata.gz >/dev/null
+          curl -fsS http://127.0.0.1:10000/api/demo-image >/dev/null
+          docker logs labelcheck-test
+      - name: Clean up
+        if: always()
+        run: docker rm -f labelcheck-test || true
