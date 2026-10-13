@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: ttb-label-verifier
+    runtime: docker
+    healthCheckPath: /health
+    autoDeploy: true
