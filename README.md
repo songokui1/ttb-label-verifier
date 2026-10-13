@@ -1,5 +1,7 @@
 # LabelCheck AI
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/songokui1/ttb-label-verifier)
+
 AI-assisted alcohol label verification prototype built for the U.S. Department of the Treasury take-home exercise.
 
 LabelCheck AI helps a human compliance reviewer compare alcohol-label artwork with application data. It extracts visible label text, applies field-specific verification rules, and returns three clear outcomes: Match, Mismatch, or Review needed.
