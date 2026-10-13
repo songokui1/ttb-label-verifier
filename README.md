@@ -6,6 +6,13 @@ LabelCheck AI helps a human compliance reviewer compare alcohol-label artwork wi
 
 > This is a proof-of-concept decision-support tool. It does not issue a TTB approval or replace a regulatory determination.
 
+## Live prototype
+
+- **Application:** https://ttb-label-verifier-r392.onrender.com
+- **Health check:** https://ttb-label-verifier-r392.onrender.com/health
+
+Manual live testing on October 13, 2026 measured approximately **2.48 seconds click-to-result on a fresh private-browser session**, with subsequent warm reviews around **0.55–0.65 seconds** after the local OCR worker was initialized.
+
 ## Design summary
 
 The stakeholder notes emphasize three practical constraints: routine matching consumes reviewer time, useful results need to return quickly, and government networks may block outbound ML endpoints.
@@ -73,7 +80,7 @@ The OCR engine and English language data are bundled into the deployed applicati
 1. Open the deployed application.
 2. Click **Run built-in demo**.
 3. The browser initializes the locally hosted OCR engine, analyzes a synthetic distilled-spirits label, and sends only the extracted text to the verification endpoint.
-4. Inspect the field-by-field evidence, OCR confidence, and measured end-to-end time.
+4. Inspect the field-by-field evidence, OCR confidence, and measured click-to-result time.
 5. Upload another label and change one or more expected application values to observe mismatch and review behavior.
 
 The first OCR run can take longer than subsequent runs because the browser must initialize the WebAssembly OCR engine. The worker is reused for later labels in the same page session.
