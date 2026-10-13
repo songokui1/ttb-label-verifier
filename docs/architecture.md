@@ -19,7 +19,7 @@ LabelCheck AI is a standalone proof-of-concept for accelerating routine alcohol-
    - explicit all-caps heading validation.
 6. Each field returns PASS, MISMATCH, REVIEW NEEDED, or NOT REQUIRED.
 7. The overall result is conservative: any mismatch yields MISMATCH; otherwise uncertainty yields REVIEW NEEDED.
-8. The UI shows evidence, rationale, OCR confidence, and end-to-end elapsed time.
+8. The UI shows evidence, rationale, OCR confidence, and click-to-result latency.
 
 ## Why browser-side OCR
 
@@ -61,9 +61,11 @@ The prototype is decision support. It does not issue a Certificate of Label Appr
 
 ## Performance model
 
-The interface reports end-to-end time, including local OCR and backend verification.
+The interface reports click-to-result latency, including browser OCR initialization when needed, image preparation, recognition, and backend verification.
 
 The OCR worker is initialized once and reused for later labels in the same browser session. The first run can therefore be slower than warm subsequent runs because WebAssembly and language data must be initialized.
+
+In manual live testing on October 13, 2026, the built-in demo completed in approximately 2.48 seconds from click to rendered result in a fresh private-browser session. Subsequent warm runs were approximately 0.55–0.65 seconds.
 
 The backend itself performs only lightweight deterministic comparison.
 
