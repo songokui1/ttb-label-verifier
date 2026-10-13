@@ -529,6 +529,24 @@ table{width:100%;border-collapse:collapse;min-width:850px}th,td{padding:11px;tex
 
 <script>
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function errorMessage(value){
+  if(!value) return "Verification failed.";
+  if(typeof value==="string") return value;
+  if(Array.isArray(value)){
+    return value.map(item=>{
+      if(typeof item==="string") return item;
+      if(item && typeof item.msg==="string") return item.msg;
+      return JSON.stringify(item);
+    }).join("; ");
+  }
+  if(typeof value==="object"){
+    if(typeof value.detail==="string") return value.detail;
+    if(value.detail) return errorMessage(value.detail);
+    if(typeof value.message==="string") return value.message;
+    try{return JSON.stringify(value)}catch{return "Verification failed."}
+  }
+  return String(value);
+}
 let ocrWorkerPromise=null;
 
 function setProgress(value){
@@ -613,7 +631,7 @@ async function verifyText(fields,ocr,warningBold=null){
   const text=await response.text();
   let data;
   try{data=JSON.parse(text)}catch{data={detail:text||"Unexpected server response"}}
-  if(!response.ok) throw new Error(data.detail||"Verification failed");
+  if(!response.ok) throw new Error(errorMessage(data.detail||data));
   data.client_ocr_ms=ocr.ocrMs;
   return data;
 }
@@ -641,12 +659,15 @@ document.getElementById("verify-form").onsubmit=async e=>{
   button.disabled=true;status.textContent="Preparing local OCR…";setProgress(2);
   try{
     const ocr=await runOcr(file);
+    if(!ocr.text.trim()) throw new Error("No readable text was detected in the label image. Try a clearer image.");
     status.textContent="Applying verification rules…";
     const data=await verifyText(applicationFields(e.target),ocr,null);
     render(data);status.textContent="Verification complete.";
   }catch(err){
-    console.error(err);status.textContent="Verification failed.";
-    alert(err.message||"Verification failed");
+    console.error(err);
+    const message=errorMessage(err);
+    status.textContent="Verification failed: "+message;
+    alert(message);
   }finally{button.disabled=false;hideProgress()}
 };
 
@@ -659,13 +680,16 @@ document.getElementById("demo-button").onclick=async()=>{
     if(!imageResponse.ok) throw new Error("Could not load built-in demo image.");
     const blob=await imageResponse.blob();
     const ocr=await runOcr(blob);
+    if(!ocr.text.trim()) throw new Error("The built-in demo image produced no readable OCR text.");
     status.textContent="Applying verification rules…";
     const fields=applicationFields(document.getElementById("verify-form"));
     const data=await verifyText(fields,ocr,true);
     render(data);status.textContent="Demo complete.";
   }catch(err){
-    console.error(err);status.textContent="Demo failed.";
-    alert(err.message||"Built-in demo failed");
+    console.error(err);
+    const message=errorMessage(err);
+    status.textContent="Demo failed: "+message;
+    alert(message);
   }finally{button.disabled=false;hideProgress()}
 };
 
@@ -709,6 +733,7 @@ document.getElementById("batch-form").onsubmit=async e=>{
       if(!file)continue;
       status.textContent="Batch OCR "+(processed+1)+"…";
       const ocr=await runOcr(file);
+      if(!ocr.text.trim()) throw new Error("No readable text was detected in "+row.filename+". Try a clearer image.");
       const fields={
         brand_name:row.brand_name||"",
         class_type:row.class_type||"",
@@ -726,7 +751,10 @@ document.getElementById("batch-form").onsubmit=async e=>{
     document.getElementById("batch-output").textContent=JSON.stringify({total:results.length,summary:counts,items:results},null,2);
     status.textContent="Batch complete.";
   }catch(err){
-    console.error(err);status.textContent="Batch failed.";alert(err.message||"Batch failed");
+    console.error(err);
+    const message=errorMessage(err);
+    status.textContent="Batch failed: "+message;
+    alert(message);
   }finally{button.disabled=false;hideProgress()}
 };
 </script>
