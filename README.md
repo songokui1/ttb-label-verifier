@@ -1,90 +1,82 @@
 # LabelCheck AI
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/songokui1/ttb-label-verifier)
+AI-assisted alcohol-label verification prototype built for the U.S. Department of the Treasury take-home exercise.
 
-AI-assisted alcohol label verification prototype built for the U.S. Department of the Treasury take-home exercise.
-
-LabelCheck AI helps a human compliance reviewer compare alcohol-label artwork with application data. It extracts visible label text, applies field-specific verification rules, and returns three clear outcomes: Match, Mismatch, or Review needed.
+LabelCheck AI helps a human compliance reviewer compare alcohol-label artwork with application data. It extracts visible label text in the reviewer browser, applies deterministic field-specific verification rules on the server, and returns clear outcomes: PASS, MISMATCH, or REVIEW NEEDED.
 
 > This is a proof-of-concept decision-support tool. It does not issue a TTB approval or replace a regulatory determination.
 
-## Why this design
+## Design summary
 
-The stakeholder notes emphasize three practical constraints:
-
-- much of the workload is repetitive data matching;
-- results need to return in about five seconds to be useful;
-- outbound ML endpoints may be blocked on government networks.
+The stakeholder notes emphasize three practical constraints: routine matching consumes reviewer time, useful results need to return quickly, and government networks may block outbound ML endpoints.
 
 The prototype therefore uses a local-first architecture:
 
-label image + application data
-→ local ML OCR extraction
-→ structured evidence
-→ deterministic field-specific verification
-→ PASS / MISMATCH / REVIEW NEEDED
+label image + application data  
+→ browser-hosted Tesseract.js WebAssembly OCR  
+→ extracted text + confidence only  
+→ deterministic verification rules  
+→ PASS / MISMATCH / REVIEW NEEDED  
 → human reviewer
 
-This separates perception from decision logic. Machine learning is used where it is useful for reading label text, while numeric equivalence, text normalization, and government-warning checks are implemented as explicit, testable rules.
-
+The OCR engine and English language data are bundled into the deployed application and served from the same origin. The single-label workflow does not upload the source label image to the backend and does not depend on an external AI API.
 
 ## Tools used
 
-- Python 3.12 and FastAPI for the web application and API
-- Tesseract 5 LSTM OCR via pytesseract for local neural text extraction
-- Pillow for image validation and preprocessing
+- Python 3.12 and FastAPI for the web application and verification API
+- Tesseract.js 7 WebAssembly OCR for local browser-side neural text extraction
+- Pillow for generation of the synthetic demonstration label
 - RapidFuzz for controlled text-similarity checks
 - Pydantic for typed application data
 - Pytest and GitHub Actions for automated verification
 - Docker for reproducible packaging
 - Render for the public prototype deployment
 
+## Core features
+
+- JPG, PNG, and WebP label input
+- Browser-side OCR with locally bundled WebAssembly and English language data
+- No cloud AI API or API key
+- Brand-name normalization that tolerates harmless case and punctuation differences
+- ABV parsing, including proof-to-ABV conversion
+- Net-contents normalization such as 0.75 L = 750 mL
+- Producer/bottler and country-of-origin comparison
+- Canonical Government Health Warning wording check
+- Explicit all-caps GOVERNMENT WARNING heading check
+- Conservative human-review escalation when bold typography cannot be established automatically
+- Field-level evidence and explanations
+- PASS / MISMATCH / REVIEW NEEDED outcomes
+- OCR confidence and end-to-end processing time displayed in the UI
+- Built-in synthetic demonstration label
+- Browser-side batch-review stretch feature using a CSV manifest and up to 20 images
+- Automated unit tests plus an exact Docker deployment smoke test in GitHub Actions
+
 ## Requirements traceability
 
 | Take-home expectation | Implementation |
 | --- | --- |
 | Standalone proof-of-concept | Independent FastAPI application; no COLA integration |
-| Compare label artwork with application data | Upload form plus field-by-field verification results |
+| Compare label artwork with application data | Label image + application form + field-by-field results |
 | Common label fields | Brand, class/type, ABV, net contents, producer/bottler, country of origin, warning |
-| Exact warning review | Canonical wording check plus all-caps heading and conservative boldness assessment |
-| About five-second usability target | Server-side latency is displayed; built-in demo has a CI assertion below five seconds |
-| Simple UX | Single review form, one primary action, clear PASS / MISMATCH / REVIEW NEEDED states |
-| Human judgment for nuanced cases | Ambiguous text or visual evidence is escalated to REVIEW NEEDED |
-| Batch-upload opportunity | Optional bounded CSV + multi-image batch workflow |
-| Network restrictions | Core OCR runs locally with no external ML endpoint |
-| README setup/run documentation | Docker and local-development instructions included |
+| Exact warning review | Canonical wording comparison and all-caps heading check |
+| About five-second usability target | End-to-end elapsed time is displayed; processing is moved off the constrained server and into the reviewer's browser |
+| Simple UX | One main review form, one primary action, and clear result states |
+| Human judgment for nuanced cases | Ambiguous text or typography is escalated to REVIEW NEEDED |
+| Batch-upload opportunity | Optional CSV + multi-image batch workflow |
+| Network restrictions | OCR assets are bundled and served from the same application; no external ML endpoint is required |
+| README setup/run documentation | Docker and local-development instructions below |
 | Approach, tools, assumptions | Documented here and in docs/architecture.md |
-| Working deployed URL | Render Blueprint and Docker configuration included; live URL supplied separately in submission |
-
-## Core features
-
-- JPG, PNG, and WebP label upload
-- Local Tesseract LSTM OCR with no cloud API dependency
-- Brand-name normalization that tolerates harmless case and punctuation differences
-- ABV parsing, including proof-to-ABV conversion
-- Net-contents normalization such as 0.75 L = 750 mL
-- Producer/bottler and country-of-origin comparison
-- Government health-warning wording check
-- Conservative visual check of the GOVERNMENT WARNING heading
-- Field-level evidence and explanations
-- PASS / MISMATCH / REVIEW NEEDED outcomes
-- Measured processing latency shown in the interface
-- In-memory image processing with no intentional document persistence
-- Built-in synthetic demo label for immediate reviewer testing
-- Batch-review stretch feature with CSV + multiple label images
-- Automated tests and GitHub Actions CI
-- Docker and Render deployment configuration
+| Deployed prototype | Docker/Render configuration included; public URL supplied in the application submission |
 
 ## Reviewer quick test
 
-After deployment:
+1. Open the deployed application.
+2. Click **Run built-in demo**.
+3. The browser initializes the locally hosted OCR engine, analyzes a synthetic distilled-spirits label, and sends only the extracted text to the verification endpoint.
+4. Inspect the field-by-field evidence, OCR confidence, and measured end-to-end time.
+5. Upload another label and change one or more expected application values to observe mismatch and review behavior.
 
-1. Open the application URL.
-2. Click Run built-in demo.
-3. The synthetic label should produce a PASS result in roughly one second on a warm local environment.
-4. Upload another label and change one or more expected application fields to observe mismatch and review behavior.
-
-The built-in demo is generated at runtime, so no external image asset or network call is required.
+The first OCR run can take longer than subsequent runs because the browser must initialize the WebAssembly OCR engine. The worker is reused for later labels in the same page session.
 
 ## Run with Docker
 
@@ -97,17 +89,12 @@ Then open http://localhost:10000.
 
 ## Local development
 
-Requirements:
-
-- Python 3.12+
-- Tesseract OCR installed and available as tesseract
-
-Commands:
+For backend-only development:
 
     python -m venv .venv
     source .venv/bin/activate
 
-On Windows use:
+On Windows:
 
     .venv\Scripts\activate
 
@@ -117,34 +104,40 @@ Then:
     uvicorn app.main:app --reload
     python -m pytest
 
+The browser OCR assets are assembled by the Docker build from pinned npm packages. For full end-to-end local testing, Docker is the recommended path.
+
 ## Batch review
 
-The stretch feature accepts a CSV manifest plus matching image files. Required columns are:
+The stretch workflow accepts a CSV manifest and matching images. Required columns are:
 
     filename,brand_name,class_type,alcohol_content,net_contents,producer_name_address,country_of_origin
 
-The public prototype caps one request at 20 images. A production implementation for 200–300-label importer batches should use queued jobs and bounded workers rather than keeping a web request open.
+OCR is executed sequentially in the reviewer browser using one reused worker. The prototype limits a batch to 20 labels to keep the interactive demo predictable.
+
+A production design for the 200–300-label importer batches described by the stakeholder should use a dedicated client or queued processing workflow with observability and durable result metadata.
 
 A sample CSV is included in sample_data/batch_manifest.csv.
 
-## Technical choices
+## Technical decisions
 
-### Local-first OCR
+### Browser-side OCR
 
-The stakeholder notes specifically mention government-network restrictions on outbound ML endpoints. The prototype therefore works without any cloud model or API key. This also improves privacy and demo reliability.
+The stakeholder notes call out blocked outbound traffic to ML endpoints. Rather than requiring an external vision API, the deployment packages Tesseract.js, its WebAssembly core, and English language model inside the same Docker image.
+
+This also removes OCR compute from the small prototype web server and keeps the source label image in the user's browser for the single-label workflow.
 
 ### Deterministic verification
 
-The OCR engine extracts visible evidence, but it does not decide whether a label is legally approved.
+OCR performs perception; it does not make the regulatory decision.
 
-- Brand and descriptive text use normalization and controlled similarity thresholds.
-- ABV and volume are parsed numerically.
-- The government-warning wording is checked against the canonical statement.
-- Uncertain OCR or visual formatting is sent to Review needed rather than being silently accepted.
+- Text fields use normalization and controlled similarity thresholds.
+- ABV and net contents are parsed numerically.
+- Government-warning wording is checked against the canonical statement.
+- Ambiguous results are escalated rather than silently accepted.
 
-### Human-in-the-loop behavior
+### Human-in-the-loop boundary
 
-Some label-review questions are inherently visual or contextual. The prototype deliberately exposes uncertainty instead of producing false confidence.
+The prototype deliberately exposes uncertainty. If OCR evidence is weak or visual typography such as warning boldness is not positively established, the result is REVIEW NEEDED rather than a fabricated pass.
 
 ## TTB guidance used
 
@@ -152,43 +145,38 @@ The prototype focuses on common label information described by TTB for distilled
 
 Official references:
 
-- TTB Distilled Spirits Labeling: https://www.ttb.gov/regulated-commodities/beverage-alcohol/distilled-spirits/labeling
-- TTB Health Warning Statement: https://www.ttb.gov/regulated-commodities/beverage-alcohol/distilled-spirits/ds-labeling-home/ds-health-warning
-- TTB Net Contents: https://www.ttb.gov/regulated-commodities/beverage-alcohol/distilled-spirits/ds-labeling-home/ds-net-contents
-- TTB Brand Name: https://www.ttb.gov/regulated-commodities/beverage-alcohol/distilled-spirits/ds-labeling-home/ds-brand-name
+- https://www.ttb.gov/regulated-commodities/beverage-alcohol/distilled-spirits/labeling
+- https://www.ttb.gov/regulated-commodities/beverage-alcohol/distilled-spirits/ds-labeling-home/ds-health-warning
+- https://www.ttb.gov/regulated-commodities/beverage-alcohol/distilled-spirits/ds-labeling-home/ds-net-contents
+- https://www.ttb.gov/regulated-commodities/beverage-alcohol/distilled-spirits/ds-labeling-home/ds-brand-name
 
 ## Assumptions and limitations
 
-- This is not an exhaustive implementation of all beer, wine, and distilled-spirits regulations.
+- This is not an exhaustive implementation of every beer, wine, and distilled-spirits regulation.
 - The primary demonstration is a distilled-spirits workflow.
-- Direct COLA integration is intentionally out of scope, matching the stakeholder notes.
-- OCR accuracy varies with glare, curvature, image quality, resolution, and typography.
-- The local visual boldness check is conservative. Ambiguous typography is escalated for human review.
-- Production use would require formal security, privacy, accessibility, monitoring, records-retention, authorization, and deployment review.
-- No uploaded label image is intentionally written to persistent storage by the application code.
-
-## Evaluation alignment
-
-The implementation is intentionally optimized for the criteria in the take-home:
-
-- Correctness and completeness: core comparison workflow plus warning checks
-- Code quality and organization: typed application model, isolated verification functions, tests
-- Technical choices: local-first OCR and deterministic rule layer
-- UX and error handling: simple form, explicit results, validation, review state
-- Attention to requirements: measured latency and standalone deployment
-- Creative problem-solving: explainable human-review path and batch-processing stretch feature
-
+- Direct COLA integration is intentionally out of scope.
+- OCR quality varies with glare, curvature, image quality, resolution, and typography.
+- Exact warning boldness is conservatively escalated to a human unless positively known.
+- Production use would require formal security, privacy, accessibility, records-retention, authorization, monitoring, and deployment review.
+- The single-label workflow does not intentionally persist or upload the source label image.
 
 ## Deployment
 
-The repository includes a Render Blueprint and Dockerfile. The service uses the local Tesseract OCR engine and does not require an API key.
-
-Render configuration:
+The repository includes a Render Blueprint and Dockerfile.
 
 - Runtime: Docker
 - Health check: `/health`
 - Region: Virginia
-- Automatic deploy: only after linked CI checks pass
-- Default prototype plan: Free
+- Prototype plan: Free
+- No AI API key required
 
-For an evaluation window where instant first-load response matters, a non-sleeping Render compute plan is preferable because Render Free services can spin down after periods of inactivity. This hosting cold start is separate from the application's measured label-processing time.
+The multi-stage Docker build vendors the browser OCR dependencies into the final image, so runtime OCR does not depend on npm, jsDelivr, or another third-party ML endpoint.
+
+## Evaluation alignment
+
+- **Correctness and completeness:** core field comparisons and warning checks
+- **Code quality and organization:** typed data model, isolated rule functions, tests
+- **Technical choices:** browser-side WebAssembly OCR plus deterministic verification
+- **UX and error handling:** simple workflow, visible progress, confidence, explicit uncertainty
+- **Attention to requirements:** latency measurement, standalone deployment, blocked-network consideration
+- **Creative problem-solving:** same-origin browser inference, human-review boundary, and batch-processing stretch workflow
