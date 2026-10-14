@@ -6,6 +6,7 @@ from app.main import (
     app,
     fold_text,
     parse_abv,
+    parse_alcohol,
     parse_volume_ml,
     verify_ocr_text,
 )
@@ -138,3 +139,64 @@ def test_stones_throw_typography_is_not_a_mismatch():
     brand = next(row for row in payload["results"] if row["field"] == "Brand name")
     assert brand["status"] == "pass"
     assert payload["overall_status"] == "review_needed"
+
+
+def test_volume_parses_thousands_separator():
+    assert parse_volume_ml("1,750 mL") == 1750.0
+
+
+def test_contradictory_percent_and_proof_are_detected():
+    parsed = parse_alcohol("45% Alc./Vol. (80 Proof)")
+    assert parsed["abv"] == 45.0
+    assert parsed["contradictory"] is True
+
+
+def test_incomplete_class_description_does_not_pass():
+    text = SAMPLE_OCR.replace(
+        "KENTUCKY STRAIGHT\nBOURBON WHISKEY",
+        "BOURBON WHISKEY",
+        1,
+    )
+    payload = verify_ocr_text(
+        text,
+        application(),
+        ocr_confidence=95.0,
+        warning_bold=None,
+    )
+    result = next(row for row in payload["results"] if row["field"] == "Class / type")
+    assert result["status"] != "pass"
+
+
+def test_missing_producer_address_does_not_pass():
+    text = SAMPLE_OCR.replace(
+        "Bottled by Old Tom Distillery\nFrankfort, KY",
+        "Bottled by Old Tom Distillery",
+        1,
+    )
+    payload = verify_ocr_text(
+        text,
+        application(),
+        ocr_confidence=95.0,
+        warning_bold=None,
+    )
+    result = next(
+        row for row in payload["results"] if row["field"] == "Producer / bottler"
+    )
+    assert result["status"] != "pass"
+
+
+def test_contradictory_label_abv_and_proof_is_mismatch():
+    text = SAMPLE_OCR.replace(
+        "45% Alc./Vol. (90 Proof)",
+        "45% Alc./Vol. (80 Proof)",
+        1,
+    )
+    payload = verify_ocr_text(
+        text,
+        application(),
+        ocr_confidence=95.0,
+        warning_bold=None,
+    )
+    result = next(row for row in payload["results"] if row["field"] == "Alcohol content")
+    assert result["status"] == "mismatch"
+    assert "internally contradictory" in result["reason"]
