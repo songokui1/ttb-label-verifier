@@ -421,3 +421,38 @@ def test_same_line_marketing_percentage_does_not_contaminate_alcohol():
     assert result["status"] == "pass"
     assert result["observed"] == "100% NATURAL 45% Alc./Vol. (90 Proof)"
     assert payload["overall_status"] == "pass"
+
+
+
+def test_country_token_in_unrelated_text_does_not_pass():
+    changed = application().model_copy(update={"country_of_origin": "US"})
+    text = SAMPLE_OCR + "\nProduct of Romania\nContact us for more information"
+    payload = verify_ocr_text(
+        text,
+        changed,
+        ocr_confidence=95.0,
+        warning_bold=True,
+    )
+    result = next(
+        row for row in payload["results"] if row["field"] == "Country of origin"
+    )
+    assert result["status"] == "review_needed"
+    assert result["observed"] is None
+    assert payload["overall_status"] != "pass"
+
+
+def test_country_with_explicit_origin_context_passes():
+    changed = application().model_copy(update={"country_of_origin": "US"})
+    text = SAMPLE_OCR + "\nProduct of US"
+    payload = verify_ocr_text(
+        text,
+        changed,
+        ocr_confidence=95.0,
+        warning_bold=True,
+    )
+    result = next(
+        row for row in payload["results"] if row["field"] == "Country of origin"
+    )
+    assert result["status"] == "pass"
+    assert result["observed"] == "Product of US"
+    assert payload["overall_status"] == "pass"
