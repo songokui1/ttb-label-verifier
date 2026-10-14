@@ -507,3 +507,52 @@ def test_country_origin_label_with_expected_country_passes():
     )
     assert result["status"] == "pass"
     assert result["observed"] == "Country of Origin: Oman"
+
+
+def test_warning_undetected_by_ocr_is_review_not_a_confirmed_violation():
+    # A real label may contain a warning even when overall OCR confidence is high.
+    text = SAMPLE_OCR.replace(CANONICAL_WARNING, "", 1)
+    payload = verify_ocr_text(
+        text,
+        application(),
+        ocr_confidence=89.0,
+        warning_bold=None,
+    )
+    fields = {item["field"]: item for item in payload["results"]}
+    assert fields["Government warning wording"]["status"] == "review_needed"
+    assert fields["Government warning format"]["status"] == "review_needed"
+    assert fields["Government warning wording"]["observed"] is None
+    assert payload["overall_status"] == "review_needed"
+
+
+def test_detected_nonuppercase_warning_heading_remains_mismatch():
+    text = SAMPLE_OCR.replace(
+        "GOVERNMENT WARNING:", "Government Warning:", 1
+    )
+    payload = verify_ocr_text(
+        text,
+        application(),
+        ocr_confidence=95.0,
+        warning_bold=None,
+    )
+    fields = {item["field"]: item for item in payload["results"]}
+    assert fields["Government warning wording"]["status"] == "pass"
+    assert fields["Government warning format"]["status"] == "mismatch"
+    assert payload["overall_status"] == "mismatch"
+
+
+def test_detected_materially_wrong_warning_text_remains_mismatch():
+    text = SAMPLE_OCR.replace(
+        CANONICAL_WARNING,
+        "GOVERNMENT WARNING: This product contains alcohol.",
+        1,
+    )
+    payload = verify_ocr_text(
+        text,
+        application(),
+        ocr_confidence=95.0,
+        warning_bold=None,
+    )
+    fields = {item["field"]: item for item in payload["results"]}
+    assert fields["Government warning wording"]["status"] == "mismatch"
+    assert payload["overall_status"] == "mismatch"

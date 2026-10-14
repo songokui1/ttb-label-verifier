@@ -526,8 +526,8 @@ def verify_ocr_text(
                 "Government warning wording",
                 CANONICAL_WARNING,
                 None,
-                "mismatch",
-                "Required government warning text was not detected.",
+                "review_needed",
+                "OCR did not reliably detect the warning; confirm its presence and wording visually.",
             )
         )
     else:
@@ -559,9 +559,15 @@ def verify_ocr_text(
             )
         )
 
-    if not extracted["warning_caps"]:
+    if not warning:
+        format_status = "review_needed"
+        format_reason = (
+            "OCR did not reliably detect the warning heading; confirm its capitalization "
+            "and bold typography visually."
+        )
+    elif not extracted["warning_caps"]:
         format_status = "mismatch"
-        format_reason = "The required all-caps GOVERNMENT WARNING heading was not detected."
+        format_reason = "The detected GOVERNMENT WARNING heading is not all caps."
     elif warning_bold is True:
         format_status = "pass"
         format_reason = "All-caps heading detected and bold formatting was positively verified."
