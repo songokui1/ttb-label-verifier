@@ -11,7 +11,7 @@ LabelCheck AI helps a human compliance reviewer compare alcohol-label artwork wi
 - **Application:** https://ttb-label-verifier-r392.onrender.com
 - **Health check:** https://ttb-label-verifier-r392.onrender.com/health
 
-Manual live testing on October 13, 2026 observed fresh private-browser click-to-result times of approximately **2.5–4.2 seconds**, with subsequent warm reviews around **0.5–0.7 seconds** after the local OCR worker was initialized. Fresh-session timing varies with browser initialization and client/network conditions.
+Manual live testing on October 13, 2026 observed fresh private-browser click-to-result times of approximately **2.5–4.2 seconds**, with subsequent warm reviews around **0.5–0.7 seconds** after the local OCR worker was initialized. Additional manual checks following the warning-OCR correction recorded **1.55 seconds** for the built-in demo and **2.03 seconds** for a real back-label review (REVIEW NEEDED). These are observed results, not a performance guarantee; timing depends on the browser, device, and network. The in-app timer starts when the reviewer clicks a verification button and does **not** include initial navigation to the site or any Render service wake-up time.
 
 ## Design summary
 
@@ -26,7 +26,7 @@ label image + application data
 → PASS / MISMATCH / REVIEW NEEDED  
 → human reviewer
 
-The OCR engine and English language data are bundled into the deployed application and served from the same origin. The single-label workflow does not upload the source label image to the backend and does not depend on an external AI API.
+The OCR engine and English language data are bundled into the deployed application and served from the same origin. In single-label review, **the source image stays in the browser**; extracted OCR text, confidence, expected application fields, and the optional demo-known warning-format flag are sent to the FastAPI verifier. No external AI inference API or model API key is required.
 
 ## Tools used
 
@@ -66,8 +66,8 @@ The OCR engine and English language data are bundled into the deployed applicati
 | Standalone proof-of-concept | Independent FastAPI application; no COLA integration |
 | Compare label artwork with application data | Label image + application form + field-by-field results |
 | Common label fields | Brand, class/type, ABV, net contents, producer/bottler, country of origin, warning |
-| Exact warning review | Canonical wording comparison and all-caps heading check |
-| About five-second usability target | Click-to-result latency is displayed; processing is moved off the constrained server and into the reviewer's browser |
+| Exact warning review | Canonical wording, uppercase heading, and boldness evidence are handled separately; OCR uncertainty escalates to human review |
+| About five-second usability target | The UI measures click-to-result time (browser OCR + API + rendering); OCR runs on the reviewer device, with observed timings and their limits noted above |
 | Simple UX | One main review form, one primary action, and clear result states |
 | Human judgment for nuanced cases | Ambiguous text or typography is escalated to REVIEW NEEDED |
 | Batch-upload opportunity | Optional CSV + multi-image batch workflow |
@@ -122,6 +122,17 @@ Then:
 
 These direct Python commands are intentionally for backend/API development and tests. The browser OCR assets are assembled during the Docker build, so use the **Run with Docker** path above to exercise the complete application locally, including OCR.
 
+## Code layout and verification
+
+- `app/main.py` — FastAPI endpoints, request validation, and serving the application.
+- `app/verification.py` — deterministic field extraction, comparison rules, and reviewer-escalation logic.
+- `app/demo.py` — synthetic label image for the built-in demo.
+- `app/index.html` — single-page reviewer UI, in-browser OCR, and batch workflow.
+- `tests/test_app.py` — **36 passing tests** at the current assessed revision, including regressions for false matches, conflicting ABV declarations, and missing versus incorrect government warnings.
+- `.github/workflows/tests.yml` — tests, a build/start of the deployment Docker image, bundled OCR asset checks, and Chromium browser smoke tests.
+
+[GitHub Actions test history](https://github.com/songokui1/ttb-label-verifier/actions/workflows/tests.yml) · [Verified 36-test run](https://github.com/songokui1/ttb-label-verifier/actions/runs/38506580231)
+
 ## Batch review
 
 The stretch workflow accepts a CSV manifest and matching images. Required columns are:
@@ -134,7 +145,7 @@ Batch results are displayed only after the full batch completes successfully. If
 
 A production design for the 200–300-label importer batches described by the stakeholder should use a dedicated client or queued processing workflow with observability and durable result metadata.
 
-A sample CSV is included in sample_data/batch_manifest.csv.
+A CSV manifest template is included in `sample_data/batch_manifest.csv`. Its `sample_label.png` filename is illustrative: **no matching image is bundled**, so supply an image with that filename or edit the manifest to match your selected image. The `country_of_origin` column must exist, but its value can be empty.
 
 ## Technical decisions
 
@@ -151,12 +162,19 @@ OCR performs perception; it does not make the regulatory decision.
 - Text fields only auto-PASS when normalized values are equal; close fuzzy matches escalate to REVIEW NEEDED.
 - Alcohol extraction is context-aware, bounded to plausible numeric ranges, and checks percent/proof declarations for conflicts.
 - ABV and net contents are parsed numerically. Proof-only equivalence is treated as review evidence rather than proof of regulatory completeness.
-- Government-warning wording is checked against the canonical statement.
-- Ambiguous results are escalated rather than silently accepted.
+- Government-warning wording is compared with the canonical statement, ignoring differences in letter case and whitespace; heading capitalization and boldness are evaluated as distinct checks.
+- A missing OCR detection is **not proof of a missing warning**. If OCR cannot establish the warning, wording and format return REVIEW NEEDED. A detected, materially incorrect warning or a detected non-uppercase heading still returns MISMATCH.
 
 ### Human-in-the-loop boundary
 
-The prototype deliberately exposes uncertainty. If OCR evidence is weak or visual typography such as warning boldness is not positively established, the result is REVIEW NEEDED rather than a fabricated pass.
+Every field displays a result and supporting evidence:
+
+- **PASS:** the available evidence satisfies that field's implemented check, not a regulatory approval.
+- **MISMATCH:** a detected conflict or violation under the implemented rules.
+- **REVIEW NEEDED:** OCR or other available evidence is insufficient to decide reliably; the reviewer should inspect the displayed label image.
+- **NOT REQUIRED:** used when no country-of-origin value was supplied; this does **not** assert domestic origin or waive import labeling requirements.
+
+The overall result prioritizes MISMATCH, then REVIEW NEEDED, then PASS; NOT REQUIRED does not count as a pass or mismatch. Even high aggregate OCR confidence can miss a small but important warning area. The prototype therefore escalates uncertain warning presence or bold typography instead of claiming a definitive violation or an unsupported pass.
 
 ## TTB guidance used
 
@@ -175,10 +193,10 @@ Official references:
 - The primary demonstration is a distilled-spirits workflow.
 - Direct COLA integration is intentionally out of scope.
 - OCR quality varies with glare, curvature, image quality, resolution, and typography.
-- Exact warning boldness is conservatively escalated to a human unless positively known. The built-in synthetic demo is the exception because the application itself generates the heading in bold.
+- Exact warning typography is not automatically established for ordinary uploads: OCR can miss a visibly present warning, and cannot prove the heading's boldness. The tool requests visual confirmation in those cases. The built-in synthetic demo is the exception for boldness because the application generates its heading in bold. The automated wording check ignores letter case and collapses whitespace, so it is not an exhaustive regulatory typography check.
 - A blank country-of-origin field is treated as not provided; the prototype does not infer domestic origin from a blank field.
 - Production use would require formal security, privacy, accessibility, records-retention, authorization, monitoring, and deployment review.
-- The single-label workflow does not intentionally persist or upload the source label image.
+- The single-label workflow does not upload the source label image. It does send extracted text, confidence, and application entries to the server for comparison; the application does not intentionally persist those submissions.
 
 ## Deployment
 
