@@ -889,9 +889,12 @@ function parseCsv(text){
     field+=ch;
   }
   row.push(field);if(row.some(v=>v.trim()!==""))rows.push(row);
-  if(rows.length<2)return[];
+  if(!rows.length)return{headers:[],rows:[]};
   const headers=rows[0].map(x=>x.trim());
-  return rows.slice(1).map(values=>Object.fromEntries(headers.map((h,i)=>[h,(values[i]||"").trim()])));
+  const data=rows.slice(1)
+    .filter(values=>values.some(v=>v.trim()!==""))
+    .map(values=>Object.fromEntries(headers.map((h,i)=>[h,(values[i]||"").trim()])));
+  return{headers,rows:data};
 }
 
 document.getElementById("batch-form").onsubmit=async e=>{
@@ -905,12 +908,58 @@ document.getElementById("batch-form").onsubmit=async e=>{
   button.disabled=true;setProgress(2);
   document.getElementById("batch-output").textContent="";
   try{
-    const rows=parseCsv(await manifestFile.text());
+    const parsed=parseCsv(await manifestFile.text());
+    const headers=parsed.headers;
+    const rows=parsed.rows;
+    const requiredHeaders=[
+      "filename","brand_name","class_type","alcohol_content",
+      "net_contents","producer_name_address","country_of_origin"
+    ];
+
     if(!rows.length) throw new Error("The CSV manifest has no data rows.");
+    if(rows.length>20) throw new Error("Prototype batch limit is 20 manifest rows.");
+    if(new Set(headers).size!==headers.length){
+      throw new Error("The CSV manifest contains duplicate column headers.");
+    }
+    const missingHeaders=requiredHeaders.filter(header=>!headers.includes(header));
+    if(missingHeaders.length){
+      throw new Error("Missing required CSV columns: "+missingHeaders.join(", "));
+    }
+
+    const filenames=rows.map(row=>(row.filename||"").trim());
+    if(filenames.some(name=>!name)){
+      throw new Error("Every batch row must include a filename.");
+    }
+    const duplicateManifestNames=filenames.filter(
+      (name,index)=>filenames.indexOf(name)!==index
+    );
+    if(duplicateManifestNames.length){
+      throw new Error(
+        "Duplicate filenames in manifest: "+[...new Set(duplicateManifestNames)].join(", ")
+      );
+    }
+
+    const uploadedNames=images.map(file=>file.name);
+    if(new Set(uploadedNames).size!==uploadedNames.length){
+      throw new Error("Selected images contain duplicate filenames.");
+    }
+
+    const requiredValueFields=[
+      "brand_name","class_type","alcohol_content","net_contents","producer_name_address"
+    ];
+    for(const row of rows){
+      const missingValues=requiredValueFields.filter(field=>!(row[field]||"").trim());
+      if(missingValues.length){
+        throw new Error(
+          "Manifest row "+row.filename+" is missing required values: "+missingValues.join(", ")
+        );
+      }
+    }
+
     const imageMap=new Map(images.map(file=>[file.name,file]));
     const missing=rows
       .map(row=>row.filename)
-      .filter(filename=>filename && !imageMap.has(filename));
+      .filter(filename=>!imageMap.has(filename));
     if(missing.length){
       throw new Error(
         "Missing image files referenced by the manifest: "+missing.join(", ")
