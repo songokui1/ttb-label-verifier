@@ -130,6 +130,8 @@ The stretch workflow accepts a CSV manifest and matching images. Required column
 
 OCR is executed sequentially in the reviewer browser using one reused worker. Before processing, the prototype validates required CSV headers, required row values, duplicate filenames, missing image files, and the 20-row prototype limit.
 
+Batch results are displayed only after the full batch completes successfully. If OCR or verification fails on any row, the batch stops, shows the failure, and does not present a partial summary; the reviewer corrects the issue and reruns the batch.
+
 A production design for the 200–300-label importer batches described by the stakeholder should use a dedicated client or queued processing workflow with observability and durable result metadata.
 
 A sample CSV is included in sample_data/batch_manifest.csv.
