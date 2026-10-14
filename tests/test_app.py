@@ -384,3 +384,40 @@ def test_api_rejects_whitespace_only_required_field():
         },
     )
     assert response.status_code == 422
+
+
+
+def test_same_line_conflicting_alcohol_percentages_mismatch():
+    text = SAMPLE_OCR.replace(
+        "45% Alc./Vol. (90 Proof)",
+        "45% Alc./Vol. 40% Alc./Vol. (90 Proof)",
+        1,
+    )
+    payload = verify_ocr_text(
+        text,
+        application(),
+        ocr_confidence=95.0,
+        warning_bold=True,
+    )
+    result = next(row for row in payload["results"] if row["field"] == "Alcohol content")
+    assert result["status"] == "mismatch"
+    assert "Conflicting alcohol declarations" in result["reason"]
+    assert payload["overall_status"] == "mismatch"
+
+
+def test_same_line_marketing_percentage_does_not_contaminate_alcohol():
+    text = SAMPLE_OCR.replace(
+        "45% Alc./Vol. (90 Proof)",
+        "100% NATURAL 45% Alc./Vol. (90 Proof)",
+        1,
+    )
+    payload = verify_ocr_text(
+        text,
+        application(),
+        ocr_confidence=95.0,
+        warning_bold=True,
+    )
+    result = next(row for row in payload["results"] if row["field"] == "Alcohol content")
+    assert result["status"] == "pass"
+    assert result["observed"] == "100% NATURAL 45% Alc./Vol. (90 Proof)"
+    assert payload["overall_status"] == "pass"
