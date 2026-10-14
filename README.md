@@ -11,7 +11,16 @@ LabelCheck AI helps a human compliance reviewer compare alcohol-label artwork wi
 - **Application:** https://ttb-label-verifier-r392.onrender.com
 - **Health check:** https://ttb-label-verifier-r392.onrender.com/health
 
-Manual live testing on October 13, 2026 observed fresh private-browser click-to-result times of approximately **2.5–4.2 seconds**, with subsequent warm reviews around **0.5–0.7 seconds** after the local OCR worker was initialized. Additional manual checks following the warning-OCR correction recorded **1.55 seconds** for the built-in demo and **2.03 seconds** for a real back-label review (REVIEW NEEDED). These are observed results, not a performance guarantee; timing depends on the browser, device, and network. The in-app timer starts when the reviewer clicks a verification button and does **not** include initial navigation to the site or any Render service wake-up time.
+Manual tests on October 13, 2026 recorded **2.5–4.2 seconds** in fresh private-browser sessions and **0.5–0.7 seconds** on warm reviews. After the warning-OCR fix, the demo completed in **1.55 seconds** and a real back-label review in **2.03 seconds** (REVIEW NEEDED). These are observations, not guarantees. Click-to-result timing excludes initial page loading and Render wake-up time.
+
+## Reviewer quick test
+
+1. Open the [live application](https://ttb-label-verifier-r392.onrender.com) with its prefilled **OLD TOM DISTILLERY** fields (reload the page if you changed them).
+2. Click **Run built-in demo**. The generated label should return **PASS**; its bold warning heading is known because the app generates it.
+3. Inspect the field-by-field evidence, OCR confidence, and click-to-result time.
+4. For your own label, **replace the prefilled fields** with the corresponding application values, choose a JPG/PNG/WebP image, and click **Verify label**. Uncertain OCR or typography requires visual review.
+
+The first review can take longer while the browser initializes local WebAssembly OCR; the worker is reused for later labels.
 
 ## Design summary
 
@@ -19,12 +28,9 @@ The stakeholder notes emphasize three practical constraints: routine matching co
 
 The prototype therefore uses a local-first architecture:
 
-label image + application data  
-→ browser-hosted Tesseract.js WebAssembly OCR  
-→ extracted text + confidence only  
-→ deterministic verification rules  
-→ PASS / MISMATCH / REVIEW NEEDED  
-→ human reviewer
+Label image → in-browser Tesseract.js WebAssembly OCR  
+OCR text + confidence + application fields → FastAPI deterministic verification  
+Field-level PASS / MISMATCH / REVIEW NEEDED → human reviewer
 
 The OCR engine and English language data are bundled into the deployed application and served from the same origin. In single-label review, **the source image stays in the browser**; extracted OCR text, confidence, expected application fields, and the optional demo-known warning-format flag are sent to the FastAPI verifier. No external AI inference API or model API key is required.
 
@@ -41,23 +47,13 @@ The OCR engine and English language data are bundled into the deployed applicati
 
 ## Core features
 
-- JPG, PNG, and WebP label input
-- Browser-side OCR with locally bundled WebAssembly and English language data
-- No cloud AI API or API key
-- Brand-name normalization that tolerates harmless case and punctuation differences
-- ABV parsing, including proof-to-ABV conversion
-- Net-contents normalization such as 0.75 L = 750 mL
-- Producer/bottler comparison with exact-normalized PASS behavior; near matches escalate to human review
-- Country-of-origin comparison using token/phrase matching rather than substring matching
-- Canonical Government Health Warning wording check
-- Explicit all-caps GOVERNMENT WARNING heading check
-- Conservative human-review escalation when bold typography cannot be established automatically
-- Field-level evidence, explanations, and an on-page label preview for human review
-- PASS / MISMATCH / REVIEW NEEDED outcomes
-- OCR confidence and click-to-result latency displayed in the UI
-- Built-in synthetic demonstration label
-- Browser-side batch-review stretch feature using a validated CSV manifest and up to 20 images
-- Automated unit tests plus an exact Docker deployment smoke test in GitHub Actions
+- **Label input:** JPG, PNG, or WebP with browser-local OCR, image preview, confidence, and latency display.
+- **Identity checks:** brand and class/type normalization; conservative producer/bottler and country-of-origin matching.
+- **Numeric checks:** ABV/proof equivalence and contradictions; net contents conversion (e.g., 0.75 L = 750 mL).
+- **Government warning:** canonical wording and all-caps heading checks; uncertain detection or boldness escalates to a reviewer.
+- **Review results:** field-by-field evidence and reasons, with PASS, MISMATCH, or REVIEW NEEDED.
+- **Demonstration and batch:** a synthetic label demo and an optional, validated CSV/image batch workflow (20-label prototype limit).
+- **Reliability:** Docker deployment, unit/API tests, and a real-browser CI smoke test.
 
 ## Requirements traceability
 
@@ -72,19 +68,6 @@ The OCR engine and English language data are bundled into the deployed applicati
 | Human judgment for nuanced cases | Ambiguous text or typography is escalated to REVIEW NEEDED |
 | Batch-upload opportunity | Optional CSV + multi-image batch workflow |
 | Network restrictions | OCR assets are bundled and served from the same application; no external ML endpoint is required |
-| README setup/run documentation | Docker and local-development instructions below |
-| Approach, tools, assumptions | Documented here and in docs/architecture.md |
-| Deployed prototype | Docker/Render configuration included; public URL supplied in the application submission |
-
-## Reviewer quick test
-
-1. Open the deployed application.
-2. Click **Run built-in demo**.
-3. The browser initializes the locally hosted OCR engine, analyzes a synthetic distilled-spirits label, and sends only the extracted text to the verification endpoint. The demo image is generated by this application, so its bold warning heading is known by construction; ordinary uploads do not receive that assumption.
-4. Inspect the field-by-field evidence, OCR confidence, and measured click-to-result time.
-5. Upload another label and change one or more expected application values to observe mismatch and review behavior.
-
-The first OCR run can take longer than subsequent runs because the browser must initialize the WebAssembly OCR engine. The worker is reused for later labels in the same page session.
 
 ## Run with Docker
 
@@ -114,13 +97,16 @@ Windows Command Prompt:
     python -m venv .venv
     .venv\Scripts\activate.bat
 
-Then:
+Install dependencies and run the backend tests:
 
     pip install -r requirements-dev.txt
-    uvicorn app.main:app --reload
     python -m pytest
 
-These direct Python commands are intentionally for backend/API development and tests. The browser OCR assets are assembled during the Docker build, so use the **Run with Docker** path above to exercise the complete application locally, including OCR.
+To start the development API, run:
+
+    uvicorn app.main:app --reload
+
+These commands support backend/API development only. **Use Docker for the complete browser OCR experience** because the OCR assets are assembled during the Docker build.
 
 ## Code layout and verification
 
@@ -128,6 +114,7 @@ These direct Python commands are intentionally for backend/API development and t
 - `app/verification.py` — deterministic field extraction, comparison rules, and reviewer-escalation logic.
 - `app/demo.py` — synthetic label image for the built-in demo.
 - `app/index.html` — single-page reviewer UI, in-browser OCR, and batch workflow.
+- `docs/architecture.md` — technical design, performance assumptions, trade-offs, and production limitations.
 - `tests/test_app.py` — **36 passing tests** at the current assessed revision, including regressions for false matches, conflicting ABV declarations, and missing versus incorrect government warnings.
 - `.github/workflows/tests.yml` — tests, a build/start of the deployment Docker image, bundled OCR asset checks, and Chromium browser smoke tests.
 
@@ -193,7 +180,7 @@ Official references:
 - The primary demonstration is a distilled-spirits workflow.
 - Direct COLA integration is intentionally out of scope.
 - OCR quality varies with glare, curvature, image quality, resolution, and typography.
-- Exact warning typography is not automatically established for ordinary uploads: OCR can miss a visibly present warning, and cannot prove the heading's boldness. The tool requests visual confirmation in those cases. The built-in synthetic demo is the exception for boldness because the application generates its heading in bold. The automated wording check ignores letter case and collapses whitespace, so it is not an exhaustive regulatory typography check.
+- On ordinary uploads, OCR cannot prove the warning heading is **bold**, the warning body is **not bold**, or that type size, contrast, and layout requirements are met. A visibly present warning can also be missed by OCR; the tool requests visual confirmation rather than declaring an unproven violation. The generated demo is the exception for heading boldness. The automated wording comparison ignores letter case and collapses whitespace.
 - A blank country-of-origin field is treated as not provided; the prototype does not infer domestic origin from a blank field.
 - Production use would require formal security, privacy, accessibility, records-retention, authorization, monitoring, and deployment review.
 - The single-label workflow does not upload the source label image. It does send extracted text, confidence, and application entries to the server for comparison; the application does not intentionally persist those submissions.
@@ -210,11 +197,3 @@ The repository includes a Render Blueprint and Dockerfile.
 
 The multi-stage Docker build vendors the browser OCR dependencies into the final image, so runtime OCR does not depend on npm, jsDelivr, or another third-party ML endpoint.
 
-## Evaluation alignment
-
-- **Correctness and completeness:** core field comparisons and warning checks
-- **Code quality and organization:** typed data model, isolated rule functions, tests
-- **Technical choices:** browser-side WebAssembly OCR plus deterministic verification
-- **UX and error handling:** simple workflow, visible progress, confidence, explicit uncertainty
-- **Attention to requirements:** latency measurement, standalone deployment, blocked-network consideration
-- **Creative problem-solving:** same-origin browser inference, human-review boundary, and batch-processing stretch workflow
