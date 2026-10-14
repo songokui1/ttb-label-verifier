@@ -79,6 +79,10 @@ jobs:
               Image.new("RGB", (600, 400), "white").save("/tmp/blank.png")
               dialogs.clear()
               page.locator("#label-image").set_input_files("/tmp/blank.png")
+              page.wait_for_function(
+                  "() => !document.querySelector('#label-preview').classList.contains('hidden')",
+                  timeout=5000,
+              )
               page.click("#verify-button")
               page.wait_for_function(
                   "() => document.querySelector('#client-status').textContent.includes('No readable text was detected')",
@@ -115,6 +119,25 @@ jobs:
               if not dialogs or "Missing image files referenced by the manifest" not in dialogs[-1]:
                   raise AssertionError(f"Missing batch images were not reported clearly: {dialogs}")
               print("Missing-image batch UX:", dialogs[-1])
+
+              # Verify malformed batch headers are rejected before OCR.
+              with open("/tmp/bad_headers.csv", "w", encoding="utf-8") as handle:
+                  handle.write(
+                      "filename,brand_name,class_type,alcohol_content,net_contents,country_of_origin\n"
+                      "blank.png,OLD TOM DISTILLERY,Kentucky Straight Bourbon Whiskey,"
+                      "45% Alc./Vol. (90 Proof),750 mL,\n"
+                  )
+              dialogs.clear()
+              page.locator("#batch-manifest").set_input_files("/tmp/bad_headers.csv")
+              page.locator("#batch-images").set_input_files("/tmp/blank.png")
+              page.click("#batch-button")
+              page.wait_for_function(
+                  "() => document.querySelector('#batch-status').textContent.includes('Missing required CSV columns')",
+                  timeout=10000,
+              )
+              if not dialogs or "producer_name_address" not in dialogs[-1]:
+                  raise AssertionError(f"Malformed batch headers were not reported clearly: {dialogs}")
+              print("Batch-header UX:", dialogs[-1])
               browser.close()
           PY
 
