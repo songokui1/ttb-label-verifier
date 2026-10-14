@@ -199,4 +199,188 @@ def test_contradictory_label_abv_and_proof_is_mismatch():
     )
     result = next(row for row in payload["results"] if row["field"] == "Alcohol content")
     assert result["status"] == "mismatch"
-    assert "internally contradictory" in result["reason"]
+    assert "Conflicting alcohol declarations" in result["reason"]
+
+
+
+def test_producer_state_difference_never_auto_passes():
+    text = SAMPLE_OCR.replace("Frankfort, KY", "Frankfort, NY", 1)
+    payload = verify_ocr_text(
+        text,
+        application(),
+        ocr_confidence=95.0,
+        warning_bold=None,
+    )
+    result = next(
+        row for row in payload["results"] if row["field"] == "Producer / bottler"
+    )
+    assert result["status"] != "pass"
+
+
+def test_producer_street_number_difference_never_auto_passes():
+    changed = application().model_copy(
+        update={
+            "producer_name_address": (
+                "Bottled by Example Distillery, 13 Main Street, Frankfort, KY"
+            )
+        }
+    )
+    text = SAMPLE_OCR.replace(
+        "Bottled by Old Tom Distillery\nFrankfort, KY",
+        "Bottled by Example Distillery\n12 Main Street\nFrankfort, KY",
+        1,
+    )
+    payload = verify_ocr_text(
+        text,
+        changed,
+        ocr_confidence=95.0,
+        warning_bold=None,
+    )
+    result = next(
+        row for row in payload["results"] if row["field"] == "Producer / bottler"
+    )
+    assert result["status"] != "pass"
+
+
+def test_country_oman_does_not_match_romania():
+    changed = application().model_copy(update={"country_of_origin": "Oman"})
+    text = SAMPLE_OCR + "\nProduct of Romania"
+    payload = verify_ocr_text(
+        text,
+        changed,
+        ocr_confidence=95.0,
+        warning_bold=None,
+    )
+    result = next(
+        row for row in payload["results"] if row["field"] == "Country of origin"
+    )
+    assert result["status"] == "review_needed"
+    assert result["observed"] is None
+
+
+def test_country_us_does_not_match_because():
+    changed = application().model_copy(update={"country_of_origin": "US"})
+    payload = verify_ocr_text(
+        SAMPLE_OCR,
+        changed,
+        ocr_confidence=95.0,
+        warning_bold=None,
+    )
+    result = next(
+        row for row in payload["results"] if row["field"] == "Country of origin"
+    )
+    assert result["status"] == "review_needed"
+    assert result["observed"] is None
+
+
+def test_alcohol_contradiction_across_separate_lines_is_mismatch():
+    text = SAMPLE_OCR.replace(
+        "45% Alc./Vol. (90 Proof)",
+        "45% Alc./Vol.\n80 Proof",
+        1,
+    )
+    payload = verify_ocr_text(
+        text,
+        application(),
+        ocr_confidence=95.0,
+        warning_bold=None,
+    )
+    result = next(row for row in payload["results"] if row["field"] == "Alcohol content")
+    assert result["status"] == "mismatch"
+    assert "Conflicting alcohol declarations" in result["reason"]
+
+
+def test_non_alcohol_100_percent_natural_is_ignored():
+    text = "100% NATURAL\n" + SAMPLE_OCR
+    payload = verify_ocr_text(
+        text,
+        application(),
+        ocr_confidence=95.0,
+        warning_bold=True,
+    )
+    result = next(row for row in payload["results"] if row["field"] == "Alcohol content")
+    assert result["status"] == "pass"
+    assert result["observed"] == "45% Alc./Vol. (90 Proof)"
+
+
+def test_out_of_range_450_percent_alcohol_is_rejected():
+    text = SAMPLE_OCR.replace(
+        "45% Alc./Vol. (90 Proof)",
+        "450% Alc./Vol.",
+        1,
+    )
+    payload = verify_ocr_text(
+        text,
+        application(),
+        ocr_confidence=95.0,
+        warning_bold=None,
+    )
+    result = next(row for row in payload["results"] if row["field"] == "Alcohol content")
+    assert result["status"] == "mismatch"
+    assert "out-of-range" in result["reason"]
+
+
+def test_proof_only_numeric_equivalence_escalates():
+    text = SAMPLE_OCR.replace(
+        "45% Alc./Vol. (90 Proof)",
+        "90 Proof",
+        1,
+    )
+    payload = verify_ocr_text(
+        text,
+        application(),
+        ocr_confidence=95.0,
+        warning_bold=None,
+    )
+    result = next(row for row in payload["results"] if row["field"] == "Alcohol content")
+    assert result["status"] == "review_needed"
+    assert "numerically equivalent" in result["reason"]
+
+
+def test_blank_country_does_not_claim_domestic_origin():
+    payload = verify_ocr_text(
+        SAMPLE_OCR,
+        application(),
+        ocr_confidence=95.0,
+        warning_bold=None,
+    )
+    result = next(
+        row for row in payload["results"] if row["field"] == "Country of origin"
+    )
+    assert result["status"] == "not_required"
+    assert result["expected"] == "Not provided"
+    assert "does not infer domestic origin" in result["reason"]
+
+
+def test_api_rejects_out_of_range_ocr_confidence():
+    response = client.post(
+        "/api/verify-text",
+        data={
+            "brand_name": "OLD TOM DISTILLERY",
+            "class_type": "Kentucky Straight Bourbon Whiskey",
+            "alcohol_content": "45% Alc./Vol. (90 Proof)",
+            "net_contents": "750 mL",
+            "producer_name_address": "Bottled by Old Tom Distillery, Frankfort, KY",
+            "country_of_origin": "",
+            "ocr_text": SAMPLE_OCR,
+            "ocr_confidence": "101",
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_api_rejects_whitespace_only_required_field():
+    response = client.post(
+        "/api/verify-text",
+        data={
+            "brand_name": "   ",
+            "class_type": "Kentucky Straight Bourbon Whiskey",
+            "alcohol_content": "45% Alc./Vol. (90 Proof)",
+            "net_contents": "750 mL",
+            "producer_name_address": "Bottled by Old Tom Distillery, Frankfort, KY",
+            "country_of_origin": "",
+            "ocr_text": SAMPLE_OCR,
+            "ocr_confidence": "95",
+        },
+    )
+    assert response.status_code == 422
