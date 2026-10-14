@@ -65,7 +65,7 @@ The interface reports click-to-result latency, including browser OCR initializat
 
 The OCR worker is initialized once and reused for later labels in the same browser session. The first run can therefore be slower than warm subsequent runs because WebAssembly and language data must be initialized.
 
-In manual live testing on October 13, 2026, the built-in demo completed in approximately 2.48 seconds from click to rendered result in a fresh private-browser session. Subsequent warm runs were approximately 0.55–0.65 seconds.
+In manual live testing on October 13, 2026, fresh private-browser runs varied from approximately 2.5 to 4.2 seconds from click to rendered result. Subsequent warm runs were approximately 0.5–0.7 seconds after the local OCR worker was initialized. The observed range reflects client/browser initialization and network variability while remaining within the stakeholder's roughly five-second usability target in those tests.
 
 The backend itself performs only lightweight deterministic comparison.
 
