@@ -630,7 +630,7 @@ button:disabled{opacity:.6;cursor:wait}.primary{background:var(--blue);color:#ff
 .progress{height:8px;background:#eaecf0;border-radius:999px;overflow:hidden;margin:12px 0}.progress>div{height:100%;background:var(--blue);width:0;transition:width .2s}
 .quality{display:flex;gap:14px;flex-wrap:wrap;margin:10px 0 18px}.quality span{background:#f8fafc;border:1px solid var(--line);padding:7px 10px;border-radius:8px;font-size:13px}
 table{width:100%;border-collapse:collapse;min-width:850px}th,td{padding:11px;text-align:left;border-bottom:1px solid #e4e7ec;vertical-align:top;font-size:13px}th{background:#f8fafc}
-.wrap{overflow:auto}pre{white-space:pre-wrap;background:#f8fafc;padding:12px;border-radius:10px}
+.wrap{overflow:auto}pre{white-space:pre-wrap;background:#f8fafc;padding:12px;border-radius:10px}.preview{display:block;max-width:min(100%,520px);max-height:520px;object-fit:contain;margin:16px auto 0;border:1px solid var(--line);border-radius:10px;background:#fff}
 @media(max-width:700px){.grid{grid-template-columns:1fr}.wide{grid-column:auto}}
 </style>
 </head>
@@ -654,7 +654,7 @@ table{width:100%;border-collapse:collapse;min-width:850px}th,td{padding:11px;tex
 <label class="wide">Producer / bottler<input name="producer_name_address" value="Bottled by Old Tom Distillery, Frankfort, KY" required></label>
 <label class="wide">Country of origin (optional)<input name="country_of_origin"></label>
 </div>
-<label class="drop">Label image<input id="label-image" style="display:block;margin:10px auto 0;max-width:420px" type="file" accept="image/jpeg,image/png,image/webp" required></label>
+<label class="drop">Label image<input id="label-image" style="display:block;margin:10px auto 0;max-width:420px" type="file" accept="image/jpeg,image/png,image/webp" required><img id="label-preview" class="preview hidden" alt="Selected alcohol label preview"></label>
 <div id="progress-wrap" class="progress hidden"><div id="progress-bar"></div></div>
 <button class="primary" id="verify-button">Verify label</button>
 <button type="button" id="demo-button">Run built-in demo</button>
@@ -715,6 +715,20 @@ function errorMessage(value){
   return String(value);
 }
 let ocrWorkerPromise=null;
+let previewUrl=null;
+
+function showPreview(blob){
+  const preview=document.getElementById("label-preview");
+  if(previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl=URL.createObjectURL(blob);
+  preview.src=previewUrl;
+  preview.classList.remove("hidden");
+}
+
+document.getElementById("label-image").addEventListener("change",event=>{
+  const file=event.target.files[0];
+  if(file) showPreview(file);
+});
 
 function setProgress(value){
   const wrap=document.getElementById("progress-wrap");
@@ -859,6 +873,7 @@ document.getElementById("demo-button").onclick=async()=>{
     const imageResponse=await fetch("/api/demo-image");
     if(!imageResponse.ok) throw new Error("Could not load built-in demo image.");
     const blob=await imageResponse.blob();
+    showPreview(blob);
     const ocr=await runOcr(blob);
     if(!ocr.text.trim()) throw new Error("The built-in demo image produced no readable OCR text.");
     status.textContent="Applying verification rules…";
