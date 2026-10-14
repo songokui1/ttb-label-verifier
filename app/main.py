@@ -9,7 +9,7 @@ from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from rapidfuzz import fuzz
 
 app = FastAPI(title="LabelCheck AI", version="2.0.0")
@@ -1051,14 +1051,18 @@ def api_verify_text(
     ocr_confidence: float | None = Form(None, ge=0, le=100),
     warning_bold: bool | None = Form(None),
 ):
-    application = ApplicationData(
-        brand_name=brand_name,
-        class_type=class_type,
-        alcohol_content=alcohol_content,
-        net_contents=net_contents,
-        producer_name_address=producer_name_address,
-        country_of_origin=(country_of_origin.strip() if country_of_origin else None),
-    )
+    try:
+        application = ApplicationData(
+            brand_name=brand_name,
+            class_type=class_type,
+            alcohol_content=alcohol_content,
+            net_contents=net_contents,
+            producer_name_address=producer_name_address,
+            country_of_origin=(country_of_origin.strip() if country_of_origin else None),
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
     return verify_ocr_text(
         raw=ocr_text,
         application=application,
