@@ -43,49 +43,113 @@ def fold_text(value: str | None) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
-def parse_alcohol(value: str | None) -> dict:
-    text = value or ""
-    percent_match = re.search(
-        r"(?<![\d.])(\d{1,3}(?:\.\d+)?)(?!\d)\s*%",
-        text,
-    )
-    proof_match = re.search(
-        r"(?<![\d.])(\d{1,3}(?:\.\d+)?)(?!\d)\s*proof\b",
-        text,
+def _all_numeric_matches(pattern: str, text: str) -> list[float]:
+    return [float(match.group(1)) for match in re.finditer(pattern, text, re.I)]
+
+
+def _alcohol_percent_values(text: str, *, require_context: bool) -> list[float]:
+    if not require_context:
+        return _all_numeric_matches(
+            r"(?<![\d.])(\d{1,3}(?:\.\d+)?)(?!\d)\s*%",
+            text,
+        )
+
+    values = []
+
+    # Common label forms such as "45% Alc./Vol.", "45% ABV",
+    # and "45% alcohol by volume". The context must be adjacent to
+    # this percentage so marketing claims such as "100% NATURAL"
+    # are not mistaken for alcohol content just because an ABV
+    # statement appears later on the same OCR line.
+    post_context = re.compile(
+        r"(?<![\d.])(\d{1,3}(?:\.\d+)?)(?!\d)\s*%\s*"
+        r"(?=(?:"
+        r"abv\b|"
+        r"alcohol\s+by\s+volume\b|"
+        r"alc(?:ohol)?\.?\s*(?:/|by)?\s*vol(?:ume)?\.?\b"
+        r"))",
         re.I,
     )
+    values.extend(float(match.group(1)) for match in post_context.finditer(text))
 
-    percent_raw = float(percent_match.group(1)) if percent_match else None
-    proof_raw = float(proof_match.group(1)) if proof_match else None
-    percent = (
-        percent_raw
-        if percent_raw is not None and 0.0 <= percent_raw <= 100.0
-        else None
+    # Also support context before the value, e.g. "ABV 45%" or
+    # "Alcohol by volume: 45%".
+    pre_context = re.compile(
+        r"(?:"
+        r"\babv\b|"
+        r"\balcohol\s+by\s+volume\b|"
+        r"\balc(?:ohol)?\.?\s*(?:/|by)?\s*vol(?:ume)?\.?"
+        r")\s*[:=\-]?\s*"
+        r"(?<![\d.])(\d{1,3}(?:\.\d+)?)(?!\d)\s*%",
+        re.I,
     )
-    proof = (
-        proof_raw
-        if proof_raw is not None and 0.0 <= proof_raw <= 200.0
-        else None
+    values.extend(float(match.group(1)) for match in pre_context.finditer(text))
+
+    # Preserve order while removing duplicates caused by equivalent
+    # contextual patterns matching the same declaration.
+    return list(dict.fromkeys(values))
+
+
+def _alcohol_proof_values(text: str) -> list[float]:
+    return _all_numeric_matches(
+        r"(?<![\d.])(\d{1,3}(?:\.\d+)?)(?!\d)\s*proof\b",
+        text,
     )
+
+
+def _summarize_alcohol_values(
+    percents_raw: list[float],
+    proofs_raw: list[float],
+) -> dict:
+    valid_percents = [value for value in percents_raw if 0.0 <= value <= 100.0]
+    valid_proofs = [value for value in proofs_raw if 0.0 <= value <= 200.0]
+
     invalid = (
-        (percent_raw is not None and percent is None)
-        or (proof_raw is not None and proof is None)
+        len(valid_percents) != len(percents_raw)
+        or len(valid_proofs) != len(proofs_raw)
     )
-    resolved = percent if percent is not None else (proof / 2 if proof is not None else None)
+
+    comparable_values = valid_percents + [proof / 2 for proof in valid_proofs]
     contradictory = (
-        percent is not None
-        and proof is not None
-        and abs(percent - (proof / 2)) > 0.05
+        len(comparable_values) > 1
+        and max(comparable_values) - min(comparable_values) > 0.05
     )
+
+    first_percent = valid_percents[0] if valid_percents else None
+    first_proof = valid_proofs[0] if valid_proofs else None
+    resolved = (
+        first_percent
+        if first_percent is not None
+        else (first_proof / 2 if first_proof is not None else None)
+    )
+
     return {
         "abv": resolved,
-        "percent": percent,
-        "proof": proof,
-        "percent_raw": percent_raw,
-        "proof_raw": proof_raw,
+        "percent": first_percent,
+        "proof": first_proof,
+        "percents": valid_percents,
+        "proofs": valid_proofs,
+        "percent_raw": percents_raw[0] if percents_raw else None,
+        "proof_raw": proofs_raw[0] if proofs_raw else None,
+        "percent_values_raw": percents_raw,
+        "proof_values_raw": proofs_raw,
         "invalid": invalid,
         "contradictory": contradictory,
     }
+
+
+def parse_alcohol(value: str | None) -> dict:
+    """Parse an application alcohol-content field.
+
+    The field itself is alcohol-specific, so every percentage in it is
+    considered relevant. Multiple declarations are retained so contradictory
+    values cannot be hidden behind the first match.
+    """
+    text = value or ""
+    return _summarize_alcohol_values(
+        _alcohol_percent_values(text, require_context=False),
+        _alcohol_proof_values(text),
+    )
 
 
 def parse_abv(value: str | None) -> float | None:
@@ -93,61 +157,34 @@ def parse_abv(value: str | None) -> float | None:
     return None if parsed["invalid"] else parsed["abv"]
 
 
-def _has_alcohol_context(value: str) -> bool:
-    return bool(
-        re.search(
-            r"\bproof\b|\babv\b|\balcohol\b|\balc\b|alc\W*vol|%\s*(?:vol(?:ume)?|alc)",
-            value,
-            re.I,
-        )
-    )
-
-
 def extract_label_alcohol(lines: list[str]) -> dict | None:
     statements = []
-    parsed_statements = []
+    percent_values = []
+    proof_values = []
 
     for line in lines:
-        parsed = parse_alcohol(line)
-        has_numeric = (
-            parsed["percent_raw"] is not None
-            or parsed["proof_raw"] is not None
-        )
-        if has_numeric and _has_alcohol_context(line):
-            statements.append(line)
-            parsed_statements.append(parsed)
+        line_percents = _alcohol_percent_values(line, require_context=True)
+        line_proofs = _alcohol_proof_values(line)
 
-    if not parsed_statements:
+        if line_percents or line_proofs:
+            statements.append(line)
+            percent_values.extend(line_percents)
+            proof_values.extend(line_proofs)
+
+    if not statements:
         return None
 
-    values = []
-    percents = []
-    proofs = []
-    invalid = False
-
-    for parsed in parsed_statements:
-        invalid = invalid or parsed["invalid"]
-        if parsed["percent"] is not None:
-            percents.append(parsed["percent"])
-            values.append(parsed["percent"])
-        if parsed["proof"] is not None:
-            proofs.append(parsed["proof"])
-            values.append(parsed["proof"] / 2)
-
-    contradictory = False
-    if len(values) > 1:
-        contradictory = max(values) - min(values) > 0.05
-
-    resolved = values[0] if values and not contradictory and not invalid else None
+    parsed = _summarize_alcohol_values(percent_values, proof_values)
     return {
         "text": " | ".join(dict.fromkeys(statements)),
-        "abv": resolved,
-        "percents": percents,
-        "proofs": proofs,
-        "invalid": invalid,
-        "contradictory": contradictory,
+        "abv": None
+        if parsed["invalid"] or parsed["contradictory"]
+        else parsed["abv"],
+        "percents": parsed["percents"],
+        "proofs": parsed["proofs"],
+        "invalid": parsed["invalid"],
+        "contradictory": parsed["contradictory"],
     }
-
 
 def parse_volume_ml(value: str | None) -> float | None:
     if not value:
