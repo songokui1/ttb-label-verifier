@@ -211,6 +211,33 @@ def contains_token_phrase(text: str | None, phrase: str | None) -> bool:
     width = len(needle)
     return any(haystack[i : i + width] == needle for i in range(len(haystack) - width + 1))
 
+
+def is_country_origin_evidence(text: str | None, country: str | None) -> bool:
+    """Return True only when a country token is plausibly an origin declaration.
+
+    A bare token appearing inside unrelated prose (for example "contact us")
+    must not create an automatic PASS. Exact country-only lines are accepted,
+    while longer lines require an explicit origin cue.
+    """
+    if not text or not country or not contains_token_phrase(text, country):
+        return False
+
+    folded_line = fold_text(text)
+    folded_country = fold_text(country)
+    if folded_line == folded_country:
+        return True
+
+    origin_cues = (
+        r"\bproduct\s+of\b",
+        r"\bproduce\s+of\b",
+        r"\bcountry\s+of\s+origin\b",
+        r"\borigin\s*[:\-]?\b",
+        r"\bmade\s+in\b",
+        r"\bproduced\s+in\b",
+        r"\bimported\s+from\b",
+    )
+    return any(re.search(pattern, folded_line, re.I) for pattern in origin_cues)
+
 def clean_lines(raw: str) -> list[str]:
     return [
         re.sub(r"\s+", " ", line).strip()
@@ -293,7 +320,7 @@ def verify_ocr_text(
                 line
                 for line in lines
                 if application.country_of_origin
-                and contains_token_phrase(line, application.country_of_origin)
+                and is_country_origin_evidence(line, application.country_of_origin)
             ),
             None,
         ),
