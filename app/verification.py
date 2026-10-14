@@ -212,31 +212,69 @@ def contains_token_phrase(text: str | None, phrase: str | None) -> bool:
     return any(haystack[i : i + width] == needle for i in range(len(haystack) - width + 1))
 
 
-def is_country_origin_evidence(text: str | None, country: str | None) -> bool:
-    """Return True only when a country token is plausibly an origin declaration.
+def _country_tokens(value: str | None) -> list[str]:
+    """Tokenize country evidence while folding dotted initialisms such as U.S."""
+    raw = fold_text(value).split()
+    tokens: list[str] = []
+    initials: list[str] = []
 
-    A bare token appearing inside unrelated prose (for example "contact us")
-    must not create an automatic PASS. Exact country-only lines are accepted,
-    while longer lines require an explicit origin cue.
+    def flush_initials() -> None:
+        if initials:
+            tokens.append("".join(initials))
+            initials.clear()
+
+    for token in raw:
+        if len(token) == 1 and token.isalpha():
+            initials.append(token)
+        else:
+            flush_initials()
+            tokens.append(token)
+    flush_initials()
+    return tokens
+
+
+def is_country_origin_evidence(text: str | None, country: str | None) -> bool:
+    """Require the expected country to be directly attached to an origin cue.
+
+    This prevents unrelated prose on the same OCR line from creating a false
+    PASS, for example expected US with "Product of Romania. Contact us ...".
+    Exact country-only lines remain acceptable.
     """
-    if not text or not country or not contains_token_phrase(text, country):
+    if not text or not country:
         return False
 
-    folded_line = fold_text(text)
-    folded_country = fold_text(country)
-    if folded_line == folded_country:
+    line_tokens = _country_tokens(text)
+    country_tokens = _country_tokens(country)
+    if not line_tokens or not country_tokens:
+        return False
+
+    if line_tokens == country_tokens:
         return True
 
-    origin_cues = (
-        r"\bproduct\s+of\b",
-        r"\bproduce\s+of\b",
-        r"\bcountry\s+of\s+origin\b",
-        r"\borigin\s*[:\-]?\b",
-        r"\bmade\s+in\b",
-        r"\bproduced\s+in\b",
-        r"\bimported\s+from\b",
+    cue_tokens = (
+        ("product", "of"),
+        ("country", "of", "origin"),
+        ("origin",),
+        ("made", "in"),
+        ("produced", "in"),
+        ("imported", "from"),
     )
-    return any(re.search(pattern, folded_line, re.I) for pattern in origin_cues)
+
+    for cue in cue_tokens:
+        cue_width = len(cue)
+        for index in range(len(line_tokens) - cue_width + 1):
+            if tuple(line_tokens[index : index + cue_width]) != cue:
+                continue
+
+            start = index + cue_width
+            if start < len(line_tokens) and line_tokens[start] == "the":
+                start += 1
+
+            end = start + len(country_tokens)
+            if line_tokens[start:end] == country_tokens:
+                return True
+
+    return False
 
 def clean_lines(raw: str) -> list[str]:
     return [
