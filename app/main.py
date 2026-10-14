@@ -9,7 +9,7 @@ from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from rapidfuzz import fuzz
 
 app = FastAPI(title="LabelCheck AI", version="2.0.0")
@@ -27,6 +27,8 @@ CANONICAL_WARNING = (
 
 
 class ApplicationData(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     brand_name: str = Field(min_length=1)
     class_type: str = Field(min_length=1)
     alcohol_content: str = Field(min_length=1)
@@ -43,11 +45,32 @@ def fold_text(value: str | None) -> str:
 
 def parse_alcohol(value: str | None) -> dict:
     text = value or ""
-    percent_match = re.search(r"(\d{1,2}(?:\.\d+)?)\s*%", text)
-    proof_match = re.search(r"(\d{2,3}(?:\.\d+)?)\s*proof", text, re.I)
+    percent_match = re.search(
+        r"(?<![\d.])(\d{1,3}(?:\.\d+)?)(?!\d)\s*%",
+        text,
+    )
+    proof_match = re.search(
+        r"(?<![\d.])(\d{1,3}(?:\.\d+)?)(?!\d)\s*proof\b",
+        text,
+        re.I,
+    )
 
-    percent = float(percent_match.group(1)) if percent_match else None
-    proof = float(proof_match.group(1)) if proof_match else None
+    percent_raw = float(percent_match.group(1)) if percent_match else None
+    proof_raw = float(proof_match.group(1)) if proof_match else None
+    percent = (
+        percent_raw
+        if percent_raw is not None and 0.0 <= percent_raw <= 100.0
+        else None
+    )
+    proof = (
+        proof_raw
+        if proof_raw is not None and 0.0 <= proof_raw <= 200.0
+        else None
+    )
+    invalid = (
+        (percent_raw is not None and percent is None)
+        or (proof_raw is not None and proof is None)
+    )
     resolved = percent if percent is not None else (proof / 2 if proof is not None else None)
     contradictory = (
         percent is not None
@@ -58,19 +81,79 @@ def parse_alcohol(value: str | None) -> dict:
         "abv": resolved,
         "percent": percent,
         "proof": proof,
+        "percent_raw": percent_raw,
+        "proof_raw": proof_raw,
+        "invalid": invalid,
         "contradictory": contradictory,
     }
 
 
 def parse_abv(value: str | None) -> float | None:
-    return parse_alcohol(value)["abv"]
+    parsed = parse_alcohol(value)
+    return None if parsed["invalid"] else parsed["abv"]
+
+
+def _has_alcohol_context(value: str) -> bool:
+    return bool(
+        re.search(
+            r"\bproof\b|\babv\b|\balcohol\b|\balc\b|alc\W*vol|%\s*(?:vol(?:ume)?|alc)",
+            value,
+            re.I,
+        )
+    )
+
+
+def extract_label_alcohol(lines: list[str]) -> dict | None:
+    statements = []
+    parsed_statements = []
+
+    for line in lines:
+        parsed = parse_alcohol(line)
+        has_numeric = (
+            parsed["percent_raw"] is not None
+            or parsed["proof_raw"] is not None
+        )
+        if has_numeric and _has_alcohol_context(line):
+            statements.append(line)
+            parsed_statements.append(parsed)
+
+    if not parsed_statements:
+        return None
+
+    values = []
+    percents = []
+    proofs = []
+    invalid = False
+
+    for parsed in parsed_statements:
+        invalid = invalid or parsed["invalid"]
+        if parsed["percent"] is not None:
+            percents.append(parsed["percent"])
+            values.append(parsed["percent"])
+        if parsed["proof"] is not None:
+            proofs.append(parsed["proof"])
+            values.append(parsed["proof"] / 2)
+
+    contradictory = False
+    if len(values) > 1:
+        contradictory = max(values) - min(values) > 0.05
+
+    resolved = values[0] if values and not contradictory and not invalid else None
+    return {
+        "text": " | ".join(dict.fromkeys(statements)),
+        "abv": resolved,
+        "percents": percents,
+        "proofs": proofs,
+        "invalid": invalid,
+        "contradictory": contradictory,
+    }
 
 
 def parse_volume_ml(value: str | None) -> float | None:
     if not value:
         return None
     match = re.search(
-        r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(ml|l|liters?|litres?)\b",
+        r"(?<![\d.])(\d+(?:,\d{3})*(?:\.\d+)?)(?!\d)\s*(ml|l|liters?|litres?)\b",
         value,
         re.I,
     )
@@ -80,6 +163,21 @@ def parse_volume_ml(value: str | None) -> float | None:
     unit = match.group(2).casefold()
     return amount * 1000 if unit in {"l", "liter", "liters", "litre", "litres"} else amount
 
+
+def _phrase_tokens(value: str | None) -> list[str]:
+    tokens = fold_text(value).split()
+    if len(tokens) > 1 and all(len(token) == 1 for token in tokens):
+        return ["".join(tokens)]
+    return tokens
+
+
+def contains_token_phrase(text: str | None, phrase: str | None) -> bool:
+    haystack = _phrase_tokens(text)
+    needle = _phrase_tokens(phrase)
+    if not needle or len(needle) > len(haystack):
+        return False
+    width = len(needle)
+    return any(haystack[i : i + width] == needle for i in range(len(haystack) - width + 1))
 
 def clean_lines(raw: str) -> list[str]:
     return [
@@ -153,7 +251,7 @@ def verify_ocr_text(
         "brand_name": best_segment(lines, application.brand_name, 1),
         "class_type": best_segment(lines, application.class_type, 2),
         "producer": best_segment(lines, application.producer_name_address, 3),
-        "abv": next((line for line in lines if parse_abv(line) is not None), None),
+        "alcohol": extract_label_alcohol(lines),
         "volume": next(
             (line for line in lines if parse_volume_ml(line) is not None),
             None,
@@ -163,7 +261,7 @@ def verify_ocr_text(
                 line
                 for line in lines
                 if application.country_of_origin
-                and fold_text(application.country_of_origin) in fold_text(line)
+                and contains_token_phrase(line, application.country_of_origin)
             ),
             None,
         ),
@@ -172,14 +270,13 @@ def verify_ocr_text(
     }
 
     results = []
-    for field, expected, observed, pass_threshold, review_threshold in [
-        ("Brand name", application.brand_name, extracted["brand_name"], 99, 84),
-        ("Class / type", application.class_type, extracted["class_type"], 96, 82),
+    for field, expected, observed, review_threshold in [
+        ("Brand name", application.brand_name, extracted["brand_name"], 84),
+        ("Class / type", application.class_type, extracted["class_type"], 82),
         (
             "Producer / bottler",
             application.producer_name_address,
             extracted["producer"],
-            94,
             78,
         ),
     ]:
@@ -210,44 +307,59 @@ def verify_ocr_text(
             continue
 
         score = fuzz.ratio(expected_folded, observed_folded)
-        status = (
-            "pass"
-            if score >= pass_threshold
-            else "review_needed"
-            if score >= review_threshold
-            else "mismatch"
-        )
+        status = "review_needed" if score >= review_threshold else "mismatch"
         reason = (
-            "Only insignificant typography differences were detected."
-            if status == "pass"
-            else "Values are similar but need human review."
+            "Values are similar but not identical after normalization; human review is needed."
             if status == "review_needed"
             else "Label text does not match the application value."
         )
         results.append(field_result(field, expected, observed, status, reason))
 
     expected_alcohol = parse_alcohol(application.alcohol_content)
-    observed_alcohol = parse_alcohol(extracted["abv"])
+    observed_alcohol = extracted["alcohol"]
     expected_abv = expected_alcohol["abv"]
-    observed_abv = observed_alcohol["abv"]
+    observed_abv = observed_alcohol["abv"] if observed_alcohol else None
+    observed_text = observed_alcohol["text"] if observed_alcohol else None
 
-    if expected_alcohol["contradictory"]:
+    if expected_alcohol["invalid"]:
+        abv_status = "mismatch"
+        abv_reason = "Application alcohol content contains an out-of-range numeric declaration."
+    elif expected_alcohol["contradictory"]:
         abv_status = "mismatch"
         abv_reason = (
             "Application alcohol statement is internally contradictory: "
             f"{expected_alcohol['percent']}% ABV does not equal "
             f"{expected_alcohol['proof']} proof / 2."
         )
+    elif observed_alcohol is None:
+        abv_status = "review_needed"
+        abv_reason = "No alcohol-specific label declaration was reliably detected."
+    elif observed_alcohol["invalid"]:
+        abv_status = "mismatch"
+        abv_reason = "Label alcohol content contains an out-of-range numeric declaration."
     elif observed_alcohol["contradictory"]:
         abv_status = "mismatch"
         abv_reason = (
-            "Label alcohol statement is internally contradictory: "
-            f"{observed_alcohol['percent']}% ABV does not equal "
-            f"{observed_alcohol['proof']} proof / 2."
+            "Conflicting alcohol declarations were detected on the label: "
+            f"{observed_text}."
         )
     elif expected_abv is not None and observed_abv is not None:
-        abv_status = "pass" if abs(expected_abv - observed_abv) <= 0.05 else "mismatch"
-        abv_reason = f"Parsed ABV: application={expected_abv}; label={observed_abv}."
+        if abs(expected_abv - observed_abv) > 0.05:
+            abv_status = "mismatch"
+            abv_reason = f"Parsed ABV: application={expected_abv}; label={observed_abv}."
+        elif (
+            expected_alcohol["percent"] is not None
+            and not observed_alcohol["percents"]
+            and observed_alcohol["proofs"]
+        ):
+            abv_status = "review_needed"
+            abv_reason = (
+                f"Proof is numerically equivalent to {observed_abv}% ABV, "
+                "but an ABV percentage declaration was not detected; human review is needed."
+            )
+        else:
+            abv_status = "pass"
+            abv_reason = f"Parsed ABV: application={expected_abv}; label={observed_abv}."
     else:
         abv_status = "review_needed"
         abv_reason = (
@@ -259,7 +371,7 @@ def verify_ocr_text(
         field_result(
             "Alcohol content",
             application.alcohol_content,
-            extracted["abv"],
+            observed_text,
             abv_status,
             abv_reason,
         )
@@ -303,10 +415,10 @@ def verify_ocr_text(
         results.append(
             field_result(
                 "Country of origin",
-                "Not applicable / domestic",
+                "Not provided",
                 None,
                 "not_required",
-                "No country of origin was supplied in the application data.",
+                "No country of origin was supplied; this prototype does not infer domestic origin from a blank field.",
             )
         )
 
@@ -872,7 +984,7 @@ def api_verify_text(
     producer_name_address: str = Form(...),
     country_of_origin: str | None = Form(None),
     ocr_text: str = Form(...),
-    ocr_confidence: float | None = Form(None),
+    ocr_confidence: float | None = Form(None, ge=0, le=100),
     warning_bold: bool | None = Form(None),
 ):
     application = ApplicationData(
@@ -881,7 +993,7 @@ def api_verify_text(
         alcohol_content=alcohol_content,
         net_contents=net_contents,
         producer_name_address=producer_name_address,
-        country_of_origin=country_of_origin or None,
+        country_of_origin=(country_of_origin.strip() if country_of_origin else None),
     )
     return verify_ocr_text(
         raw=ocr_text,
