@@ -389,12 +389,41 @@ def sample_label_image() -> bytes:
     draw = ImageDraw.Draw(image)
 
     def font(size: int, bold: bool = False):
-        path = (
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        candidates = (
+            [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "C:/Windows/Fonts/arialbd.ttf",
+                "C:/Windows/Fonts/segoeuib.ttf",
+                "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                "/Library/Fonts/Arial Bold.ttf",
+            ]
             if bold
-            else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+            else [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "C:/Windows/Fonts/arial.ttf",
+                "C:/Windows/Fonts/segoeui.ttf",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+                "/Library/Fonts/Arial.ttf",
+            ]
         )
-        return ImageFont.truetype(path, size)
+        for candidate in candidates:
+            if Path(candidate).exists():
+                try:
+                    return ImageFont.truetype(candidate, size)
+                except OSError:
+                    pass
+
+        # Pillow/FreeType may also resolve DejaVu by family name.
+        family = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+        try:
+            return ImageFont.truetype(family, size)
+        except OSError:
+            # Final portable fallback keeps the demo endpoint functional even
+            # on hosts without the expected system font packages.
+            try:
+                return ImageFont.load_default(size=size)
+            except TypeError:
+                return ImageFont.load_default()
 
     def centered(text: str, y: int, size: int, bold: bool = False):
         selected = font(size, bold)
