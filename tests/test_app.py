@@ -456,3 +456,54 @@ def test_country_with_explicit_origin_context_passes():
     assert result["status"] == "pass"
     assert result["observed"] == "Product of US"
     assert payload["overall_status"] == "pass"
+
+
+
+def test_country_origin_cue_must_bind_to_expected_country_same_line():
+    changed = application().model_copy(update={"country_of_origin": "US"})
+    text = SAMPLE_OCR + "\nProduct of Romania. Contact us for more information"
+    payload = verify_ocr_text(
+        text,
+        changed,
+        ocr_confidence=95.0,
+        warning_bold=True,
+    )
+    result = next(
+        row for row in payload["results"] if row["field"] == "Country of origin"
+    )
+    assert result["status"] == "review_needed"
+    assert result["observed"] is None
+    assert payload["overall_status"] != "pass"
+
+
+def test_country_dotted_initialism_with_origin_context_passes():
+    changed = application().model_copy(update={"country_of_origin": "US"})
+    text = SAMPLE_OCR + "\nMade in U.S."
+    payload = verify_ocr_text(
+        text,
+        changed,
+        ocr_confidence=95.0,
+        warning_bold=True,
+    )
+    result = next(
+        row for row in payload["results"] if row["field"] == "Country of origin"
+    )
+    assert result["status"] == "pass"
+    assert result["observed"] == "Made in U.S."
+    assert payload["overall_status"] == "pass"
+
+
+def test_country_origin_label_with_expected_country_passes():
+    changed = application().model_copy(update={"country_of_origin": "Oman"})
+    text = SAMPLE_OCR + "\nCountry of Origin: Oman"
+    payload = verify_ocr_text(
+        text,
+        changed,
+        ocr_confidence=95.0,
+        warning_bold=True,
+    )
+    result = next(
+        row for row in payload["results"] if row["field"] == "Country of origin"
+    )
+    assert result["status"] == "pass"
+    assert result["observed"] == "Country of Origin: Oman"
