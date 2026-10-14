@@ -41,27 +41,42 @@ def fold_text(value: str | None) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def parse_alcohol(value: str | None) -> dict:
+    text = value or ""
+    percent_match = re.search(r"(\d{1,2}(?:\.\d+)?)\s*%", text)
+    proof_match = re.search(r"(\d{2,3}(?:\.\d+)?)\s*proof", text, re.I)
+
+    percent = float(percent_match.group(1)) if percent_match else None
+    proof = float(proof_match.group(1)) if proof_match else None
+    resolved = percent if percent is not None else (proof / 2 if proof is not None else None)
+    contradictory = (
+        percent is not None
+        and proof is not None
+        and abs(percent - (proof / 2)) > 0.05
+    )
+    return {
+        "abv": resolved,
+        "percent": percent,
+        "proof": proof,
+        "contradictory": contradictory,
+    }
+
+
 def parse_abv(value: str | None) -> float | None:
-    if not value:
-        return None
-    match = re.search(r"(\d{1,2}(?:\.\d+)?)\s*%", value)
-    if match:
-        return float(match.group(1))
-    match = re.search(r"(\d{2,3}(?:\.\d+)?)\s*proof", value, re.I)
-    return float(match.group(1)) / 2 if match else None
+    return parse_alcohol(value)["abv"]
 
 
 def parse_volume_ml(value: str | None) -> float | None:
     if not value:
         return None
     match = re.search(
-        r"(\d+(?:\.\d+)?)\s*(ml|mL|ML|l|L|liters?|litres?)\b",
+        r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(ml|l|liters?|litres?)\b",
         value,
         re.I,
     )
     if not match:
         return None
-    amount = float(match.group(1))
+    amount = float(match.group(1).replace(",", ""))
     unit = match.group(2).casefold()
     return amount * 1000 if unit in {"l", "liter", "liters", "litre", "litres"} else amount
 
@@ -182,11 +197,7 @@ def verify_ocr_text(
 
         expected_folded = fold_text(expected)
         observed_folded = fold_text(observed)
-        if (
-            expected_folded == observed_folded
-            or expected_folded in observed_folded
-            or observed_folded in expected_folded
-        ):
+        if expected_folded == observed_folded:
             results.append(
                 field_result(
                     field,
@@ -198,10 +209,7 @@ def verify_ocr_text(
             )
             continue
 
-        score = max(
-            fuzz.ratio(expected_folded, observed_folded),
-            fuzz.partial_ratio(expected_folded, observed_folded),
-        )
+        score = fuzz.ratio(expected_folded, observed_folded)
         status = (
             "pass"
             if score >= pass_threshold
@@ -218,24 +226,42 @@ def verify_ocr_text(
         )
         results.append(field_result(field, expected, observed, status, reason))
 
-    expected_abv = parse_abv(application.alcohol_content)
-    observed_abv = parse_abv(extracted["abv"])
-    abv_status = (
-        "pass"
-        if expected_abv is not None
-        and observed_abv is not None
-        and abs(expected_abv - observed_abv) <= 0.05
-        else "mismatch"
-        if observed_abv is not None
-        else "review_needed"
-    )
+    expected_alcohol = parse_alcohol(application.alcohol_content)
+    observed_alcohol = parse_alcohol(extracted["abv"])
+    expected_abv = expected_alcohol["abv"]
+    observed_abv = observed_alcohol["abv"]
+
+    if expected_alcohol["contradictory"]:
+        abv_status = "mismatch"
+        abv_reason = (
+            "Application alcohol statement is internally contradictory: "
+            f"{expected_alcohol['percent']}% ABV does not equal "
+            f"{expected_alcohol['proof']} proof / 2."
+        )
+    elif observed_alcohol["contradictory"]:
+        abv_status = "mismatch"
+        abv_reason = (
+            "Label alcohol statement is internally contradictory: "
+            f"{observed_alcohol['percent']}% ABV does not equal "
+            f"{observed_alcohol['proof']} proof / 2."
+        )
+    elif expected_abv is not None and observed_abv is not None:
+        abv_status = "pass" if abs(expected_abv - observed_abv) <= 0.05 else "mismatch"
+        abv_reason = f"Parsed ABV: application={expected_abv}; label={observed_abv}."
+    else:
+        abv_status = "review_needed"
+        abv_reason = (
+            f"Parsed ABV: application={expected_abv}; label={observed_abv}. "
+            "A reliable alcohol-content value could not be established."
+        )
+
     results.append(
         field_result(
             "Alcohol content",
             application.alcohol_content,
             extracted["abv"],
             abv_status,
-            f"Parsed ABV: application={expected_abv}; label={observed_abv}.",
+            abv_reason,
         )
     )
 
@@ -665,6 +691,15 @@ async function verifyText(fields,ocr,warningBold=null){
   return data;
 }
 
+function clearResult(){
+  const section=document.getElementById("result-section");
+  section.classList.add("hidden");
+  document.getElementById("rows").innerHTML="";
+  document.getElementById("raw").textContent="";
+  document.getElementById("overall").textContent="";
+  document.getElementById("timing").textContent="";
+}
+
 function render(j,totalClientMs=null){
   const section=document.getElementById("result-section");
   const overall=document.getElementById("overall");
@@ -685,6 +720,7 @@ document.getElementById("verify-form").onsubmit=async e=>{
   const status=document.getElementById("client-status");
   const file=document.getElementById("label-image").files[0];
   if(!file){alert("Choose a label image first.");return;}
+  clearResult();
   const clickStarted=performance.now();
   button.disabled=true;status.textContent="Preparing local OCR…";setProgress(2);
   try{
@@ -704,6 +740,7 @@ document.getElementById("verify-form").onsubmit=async e=>{
 document.getElementById("demo-button").onclick=async()=>{
   const button=document.getElementById("demo-button");
   const status=document.getElementById("client-status");
+  clearResult();
   const clickStarted=performance.now();
   button.disabled=true;status.textContent="Loading built-in demo…";setProgress(2);
   try{
@@ -754,9 +791,19 @@ document.getElementById("batch-form").onsubmit=async e=>{
   if(!manifestFile||!images.length){alert("Choose a manifest and label images.");return}
   if(images.length>20){alert("Prototype batch limit is 20 images.");return}
   button.disabled=true;setProgress(2);
+  document.getElementById("batch-output").textContent="";
   try{
     const rows=parseCsv(await manifestFile.text());
+    if(!rows.length) throw new Error("The CSV manifest has no data rows.");
     const imageMap=new Map(images.map(file=>[file.name,file]));
+    const missing=rows
+      .map(row=>row.filename)
+      .filter(filename=>filename && !imageMap.has(filename));
+    if(missing.length){
+      throw new Error(
+        "Missing image files referenced by the manifest: "+missing.join(", ")
+      );
+    }
     const results=[];
     let processed=0;
     for(const row of rows){
