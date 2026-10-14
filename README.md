@@ -11,7 +11,7 @@ LabelCheck AI helps a human compliance reviewer compare alcohol-label artwork wi
 - **Application:** https://ttb-label-verifier-r392.onrender.com
 - **Health check:** https://ttb-label-verifier-r392.onrender.com/health
 
-Manual live testing on October 13, 2026 measured approximately **2.48 seconds click-to-result on a fresh private-browser session**, with subsequent warm reviews around **0.55–0.65 seconds** after the local OCR worker was initialized.
+Manual live testing on October 13, 2026 observed fresh private-browser click-to-result times of approximately **2.5–4.2 seconds**, with subsequent warm reviews around **0.5–0.7 seconds** after the local OCR worker was initialized. Fresh-session timing varies with browser initialization and client/network conditions.
 
 ## Design summary
 
