@@ -1,9 +1,9 @@
 from fastapi.testclient import TestClient
 
-from app.main import (
+from app.main import app
+from app.verification import (
     ApplicationData,
     CANONICAL_WARNING,
-    app,
     fold_text,
     parse_abv,
     parse_alcohol,
