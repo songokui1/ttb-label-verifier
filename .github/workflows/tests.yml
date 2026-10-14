@@ -90,7 +90,31 @@ jobs:
                   raise AssertionError(f"Unexpected unreadable-image message: {dialogs[-1]}")
               if "[object Object]" in dialogs[-1]:
                   raise AssertionError("Unreadable-image error regressed to [object Object].")
+              if not page.locator("#result-section").evaluate("(el) => el.classList.contains('hidden')"):
+                  raise AssertionError("Failed verification left a stale prior result visible.")
               print("Unreadable-image UX:", dialogs[-1])
+
+              # Verify batch manifests cannot silently skip missing files.
+              page.locator("section.card details summary").last.click()
+              with open("/tmp/missing.csv", "w", encoding="utf-8") as handle:
+                  handle.write(
+                      "filename,brand_name,class_type,alcohol_content,net_contents,"
+                      "producer_name_address,country_of_origin\n"
+                      "missing.png,OLD TOM DISTILLERY,Kentucky Straight Bourbon Whiskey,"
+                      "45% Alc./Vol. (90 Proof),750 mL,"
+                      "\"Bottled by Old Tom Distillery, Frankfort, KY\",\n"
+                  )
+              dialogs.clear()
+              page.locator("#batch-manifest").set_input_files("/tmp/missing.csv")
+              page.locator("#batch-images").set_input_files("/tmp/blank.png")
+              page.click("#batch-button")
+              page.wait_for_function(
+                  "() => document.querySelector('#batch-status').textContent.includes('Missing image files')",
+                  timeout=10000,
+              )
+              if not dialogs or "Missing image files referenced by the manifest" not in dialogs[-1]:
+                  raise AssertionError(f"Missing batch images were not reported clearly: {dialogs}")
+              print("Missing-image batch UX:", dialogs[-1])
               browser.close()
           PY
 
